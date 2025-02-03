@@ -936,10 +936,10 @@ gui_x11_key_hit_cb(
     }
     else
     {
-	len = mb_char2bytes(key, string);
-
 	// Some keys need adjustment when the Ctrl modifier is used.
 	key = may_adjust_key_for_ctrl(modifiers, key);
+
+	len = mb_char2bytes(key, string);
 
 	// Remove the SHIFT modifier for keys where it's already included,
 	// e.g., '(', '!' and '*'.
@@ -1363,20 +1363,9 @@ gui_mch_init(void)
 #else
 // Use Pixmaps, looking much nicer.
 
-// If you get an error message here, you still need to unpack the runtime
-// archive!
-# ifdef magick
-#  undef magick
-# endif
-# define magick vim32x32
 # include "../runtime/vim32x32.xpm"
-# undef magick
-# define magick vim16x16
 # include "../runtime/vim16x16.xpm"
-# undef magick
-# define magick vim48x48
 # include "../runtime/vim48x48.xpm"
-# undef magick
 
     static Pixmap	icon = 0;
     static Pixmap	icon_mask = 0;

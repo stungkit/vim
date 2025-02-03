@@ -281,7 +281,7 @@ free_all_script_vars(scriptitem_T *si)
 
     hash_lock(ht);
     todo = (int)ht->ht_used;
-    for (hi = ht->ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(ht, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -456,15 +456,24 @@ handle_import(
 	scriptitem_T	*si = SCRIPT_ITEM(current_sctx.sc_sid);
 	char_u		*tail = gettail(si->sn_name);
 	char_u		*from_name;
+	int		sourced_from_nofile_buf = FALSE;
 
-	// Relative to current script: "./name.vim", "../../name.vim".
-	len = STRLEN(si->sn_name) - STRLEN(tail) + STRLEN(tv.vval.v_string) + 2;
-	from_name = alloc((int)len);
-	if (from_name == NULL)
-	    goto erret;
-	vim_strncpy(from_name, si->sn_name, tail - si->sn_name);
-	add_pathsep(from_name);
-	STRCAT(from_name, tv.vval.v_string);
+	if (STRNCMP(si->sn_name, ":source buffer=", 15) == 0)
+	    sourced_from_nofile_buf = TRUE;
+
+	if (!sourced_from_nofile_buf)
+	{
+	    // Relative to current script: "./name.vim", "../../name.vim".
+	    len = STRLEN(si->sn_name) - STRLEN(tail) + STRLEN(tv.vval.v_string) + 2;
+	    from_name = alloc((int)len);
+	    if (from_name == NULL)
+		goto erret;
+	    vim_strncpy(from_name, si->sn_name, tail - si->sn_name);
+	    add_pathsep(from_name);
+	    STRCAT(from_name, tv.vval.v_string);
+	}
+	else
+	    from_name = vim_strsave(tv.vval.v_string);
 	simplify_filename(from_name);
 
 	res = handle_import_fname(from_name, is_autoload, &sid);
@@ -838,7 +847,7 @@ vim9_declare_scriptvar(exarg_T *eap, char_u *arg)
     // parse type, check for reserved name
     p = skipwhite(p + 1);
     type = parse_type(&p, &si->sn_type_list, TRUE);
-    if (type == NULL || check_reserved_name(name, NULL) == FAIL)
+    if (type == NULL || check_reserved_name(name, FALSE) == FAIL)
     {
 	vim_free(name);
 	return p;
@@ -1122,22 +1131,19 @@ static char *reserved[] = {
     "null_string",
     "null_channel",
     "null_job",
+    "super",
     "this",
     NULL
 };
 
     int
-check_reserved_name(char_u *name, cctx_T *cctx)
+check_reserved_name(char_u *name, int is_objm_access)
 {
     int idx;
 
     for (idx = 0; reserved[idx] != NULL; ++idx)
 	if (STRCMP(reserved[idx], name) == 0
-		// "this" can be used in an object method
-		&& !(STRCMP("this", name) == 0
-		    && cctx != NULL
-		    && cctx->ctx_ufunc != NULL
-		    && (cctx->ctx_ufunc->uf_flags & (FC_OBJECT|FC_NEW))))
+		&& !(STRCMP("this", name) == 0 && is_objm_access))
 	{
 	    semsg(_(e_cannot_use_reserved_name_str), name);
 	    return FAIL;

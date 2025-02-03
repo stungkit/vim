@@ -2,8 +2,8 @@
 " Language: fstab file
 " Maintainer: Radu Dineiu <radu.dineiu@gmail.com>
 " URL: https://raw.github.com/rid9/vim-fstab/master/syntax/fstab.vim
-" Last Change: 2022 Dec 11
-" Version: 1.6.2
+" Last Change: 2024 Jul 11
+" Version: 1.6.4
 "
 " Credits:
 "   David Necas (Yeti) <yeti@physics.muni.cz>
@@ -35,7 +35,7 @@ syn match fsOperator /[,=:#]/
 " Device
 syn cluster fsDeviceCluster contains=fsOperator,fsDeviceKeyword,fsDeviceError
 syn match fsDeviceError /\%([^a-zA-Z0-9_\/#@:\.-]\|^\w\{-}\ze\W\)/ contained
-syn keyword fsDeviceKeyword contained none proc linproc tmpfs devpts devtmpfs sysfs usbfs
+syn keyword fsDeviceKeyword contained none proc linproc tmpfs devpts devtmpfs sysfs usbfs tracefs overlay
 syn keyword fsDeviceKeyword contained LABEL nextgroup=fsDeviceLabel
 syn keyword fsDeviceKeyword contained UUID nextgroup=fsDeviceUUID
 syn keyword fsDeviceKeyword contained PARTLABEL nextgroup=fsDevicePARTLABEL
@@ -56,7 +56,7 @@ syn keyword fsMountPointKeyword contained none swap
 " Type
 syn cluster fsTypeCluster contains=fsTypeKeyword,fsTypeUnknown
 syn match fsTypeUnknown /\s\+\zs\w\+/ contained
-syn keyword fsTypeKeyword contained adfs ados affs anon_inodefs atfs audiofs auto autofs bdev befs bfs btrfs binfmt_misc cd9660 ceph cfs cgroup cifs coda coherent configfs cpuset cramfs debugfs devfs devpts devtmpfs dlmfs e2compr ecryptfs efivarfs efs erofs exfat ext2 ext2fs ext3 ext4 f2fs fdesc ffs filecore fuse fuseblk fusectl gfs2 hfs hfsplus hpfs hugetlbfs iso9660 jffs jffs2 jfs kernfs lfs linprocfs mfs minix mqueue msdos ncpfs nfs nfs4 nfsd nilfs2 none ntfs ntfs3 null nwfs ocfs2 omfs overlay ovlfs pipefs portal proc procfs pstore ptyfs pvfs2 qnx4 qnx6 reiserfs ramfs romfs rpc_pipefs securityfs shm smbfs spufs squashfs sockfs sshfs std subfs swap sysfs sysv tcfs tmpfs ubifs udf ufs umap umsdos union usbfs userfs v9fs vfat virtiofs vs3fs vxfs wrapfs wvfs xenfs xenix xfs zisofs zonefs
+syn keyword fsTypeKeyword contained adfs ados affs anon_inodefs atfs audiofs auto autofs bdev befs bfs btrfs binfmt_misc cd9660 ceph cfs cgroup cifs coda coherent configfs cpuset cramfs debugfs devfs devpts devtmpfs dlmfs e2compr ecryptfs efivarfs efs erofs exfat ext2 ext2fs ext3 ext4 f2fs fdesc ffs filecore fuse fuseblk fusectl gfs2 hfs hfsplus hpfs hugetlbfs iso9660 jffs jffs2 jfs kernfs lfs linprocfs mfs minix mqueue msdos ncpfs nfs nfs4 nfsd nilfs2 none ntfs ntfs3 null nwfs ocfs2 omfs overlay ovlfs pipefs portal proc procfs pstore ptyfs pvfs2 qnx4 qnx6 reiserfs ramfs romfs rpc_pipefs securityfs shm smbfs spufs squashfs sockfs sshfs std subfs swap sysfs sysv tcfs tmpfs tracefs ubifs udf ufs umap umsdos union usbfs userfs v9fs vfat virtiofs vs3fs vxfs wrapfs wvfs xenfs xenix xfs zisofs zonefs
 
 " Options
 " -------
@@ -80,10 +80,10 @@ syn match fsOptionsKeywords contained /\<x-systemd\.\%(device-bound\|automount\|
 syn match fsOptionsKeywords contained /\<x-initrd\.mount/
 
 syn match fsOptionsKeywords contained /\<cache=/ nextgroup=fsOptionsCache
-syn keyword fsOptionsCache yes no none strict loose fscache mmap
+syn keyword fsOptionsCache contained yes no none strict loose fscache mmap
 
 syn match fsOptionsKeywords contained /\<dax=/ nextgroup=fsOptionsDax
-syn keyword fsOptionsDax inode never always
+syn keyword fsOptionsDax contained inode never always
 
 syn match fsOptionsKeywords contained /\<errors=/ nextgroup=fsOptionsErrors
 syn keyword fsOptionsErrors contained continue panic withdraw remount-ro recover zone-ro zone-offline repair
@@ -288,8 +288,15 @@ syn match fsOptionsKeywords contained /\<\%(atime_quantum\|preferred_slot\|local
 syn keyword fsOptionsKeywords contained strictatime inode64
 
 " Options: overlay
+syn match fsOptionsKeywords contained /\<\%(index\|uuid\|nfs_export\|metacopy\)=/ nextgroup=fsOptionsOverlayBool
+syn keyword fsOptionsOverlayBool contained on off
+syn match fsOptionsKeywords contained /\<\%(lowerdir\|upperdir\|workdir\)=/ nextgroup=fsOptionsOverlayDir
+syn match fsOptionsOverlayDir contained /[^,[:space:]]*/
 syn match fsOptionsKeywords contained /\<redirect_dir=/ nextgroup=fsOptionsOverlayRedirectDir
 syn keyword fsOptionsOverlayRedirectDir contained on follow off nofollow
+syn match fsOptionsKeywords contained /\<xino=/ nextgroup=fsOptionsOverlayXino
+syn keyword fsOptionsOverlayXino contained on off auto
+syn keyword fsOptionsKeywords contained userxattr volatile
 
 " Options: proc
 syn match fsOptionsKeywords contained /\<\%(hidepid\|subset\)=/ nextgroup=fsOptionsString
@@ -389,7 +396,7 @@ syn match fsFreqPassNumber /\d\+\s\+[012]\s*/ contained
 syn match fsDevice /^\s*\zs.\{-1,}\s/me=e-1 nextgroup=fsMountPoint contains=@fsDeviceCluster,@fsGeneralCluster
 syn match fsMountPoint /\s\+.\{-}\s/me=e-1 nextgroup=fsType contains=@fsMountPointCluster,@fsGeneralCluster contained
 syn match fsType /\s\+.\{-}\s/me=e-1 nextgroup=fsOptions contains=@fsTypeCluster,@fsGeneralCluster contained
-syn match fsOptions /\s\+.\{-}\s/me=e-1 nextgroup=fsFreqPass contains=@fsOptionsCluster,@fsGeneralCluster contained
+syn match fsOptions /\s\+.\{-}\%(\s\|$\)/ nextgroup=fsFreqPass contains=@fsOptionsCluster,@fsGeneralCluster contained
 syn match fsFreqPass /\s\+.\{-}$/ contains=@fsFreqPassCluster,@fsGeneralCluster contained
 
 " Whole line comments
@@ -462,7 +469,10 @@ hi def link fsOptionsNumberOctal Number
 hi def link fsOptionsNumberSigned Number
 hi def link fsOptionsOcfs2Coherency String
 hi def link fsOptionsOcfs2ResvLevel Number
+hi def link fsOptionsOverlayBool Boolean
+hi def link fsOptionsOverlayDir String
 hi def link fsOptionsOverlayRedirectDir String
+hi def link fsOptionsOverlayXino String
 hi def link fsOptionsQnx4Bitmap String
 hi def link fsOptionsQnx6Hold String
 hi def link fsOptionsQnx6Sync String
@@ -491,4 +501,4 @@ let b:current_syntax = "fstab"
 let &cpo = s:cpo_save
 unlet s:cpo_save
 
-" vim: ts=8 ft=vim
+" vim: ts=8 noet ft=vim

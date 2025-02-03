@@ -12,7 +12,7 @@
  * Used for both the console version and the Win32 GUI.  A lot of code is for
  * the console version only, so there is a lot of "#ifndef FEAT_GUI_MSWIN".
  *
- * Win32 (Windows NT and Windows 95) system-dependent routines.
+ * Win32 system-dependent routines.
  * Portions lifted from the Win32 SDK samples, the MSDOS-dependent code,
  * NetHack 3.1.3, GNU Emacs 19.30, and Vile 5.5.
  *
@@ -34,52 +34,14 @@
 #ifndef PROTO
 # include <process.h>
 # include <winternl.h>
-#endif
-
-#undef chdir
-#ifdef __GNUC__
-# ifndef __MINGW32__
-#  include <dirent.h>
-# endif
-#else
 # include <direct.h>
-#endif
 
-#ifndef PROTO
 # if !defined(FEAT_GUI_MSWIN)
 #  include <shellapi.h>
 # endif
-#endif
 
-#ifdef FEAT_JOB_CHANNEL
-# include <tlhelp32.h>
-#endif
-
-#ifdef __MINGW32__
-# ifndef FROM_LEFT_1ST_BUTTON_PRESSED
-#  define FROM_LEFT_1ST_BUTTON_PRESSED    0x0001
-# endif
-# ifndef RIGHTMOST_BUTTON_PRESSED
-#  define RIGHTMOST_BUTTON_PRESSED	  0x0002
-# endif
-# ifndef FROM_LEFT_2ND_BUTTON_PRESSED
-#  define FROM_LEFT_2ND_BUTTON_PRESSED    0x0004
-# endif
-# ifndef FROM_LEFT_3RD_BUTTON_PRESSED
-#  define FROM_LEFT_3RD_BUTTON_PRESSED    0x0008
-# endif
-# ifndef FROM_LEFT_4TH_BUTTON_PRESSED
-#  define FROM_LEFT_4TH_BUTTON_PRESSED    0x0010
-# endif
-
-/*
- * EventFlags
- */
-# ifndef MOUSE_MOVED
-#  define MOUSE_MOVED   0x0001
-# endif
-# ifndef DOUBLE_CLICK
-#  define DOUBLE_CLICK  0x0002
+# ifdef FEAT_JOB_CHANNEL
+#  include <tlhelp32.h>
 # endif
 #endif
 
@@ -156,7 +118,10 @@ static HANDLE g_hConOut = INVALID_HANDLE_VALUE;
 
 // Win32 Screen buffer,coordinate,console I/O information
 static SMALL_RECT g_srScrollRegion;
-static COORD	  g_coord;  // 0-based, but external coords are 1-based
+// This is explicitly initialised to work around a LTCG issue on Windows ARM64
+// (at least of 19.39.33321).  This pushes this into the `.data` rather than
+// `.bss` which corrects code generation in `write_chars` (#13453).
+static COORD	  g_coord = {0, 0};  // 0-based, but external coords are 1-based
 
 // The attribute of the screen when the editor was started
 static WORD  g_attrDefault = 7;  // lightgray text on black background
@@ -254,7 +219,7 @@ static void restore_console_color_rgb(void);
 static int suppress_winsize = 1;	// don't fiddle with console
 #endif
 
-static char_u *exe_path = NULL;
+static WCHAR *exe_pathw = NULL;
 
 static BOOL win8_or_later = FALSE;
 static BOOL win10_22H2_or_later = FALSE;
@@ -462,46 +427,71 @@ wait_for_single_object(
 # endif
 #endif   // !FEAT_GUI_MSWIN || VIMDLL
 
-    static void
-get_exe_name(void)
+    void
+mch_get_exe_name(void)
 {
     // Maximum length of $PATH is more than MAXPATHL.  8191 is often mentioned
-    // as the maximum length that works (plus a NUL byte).
-#define MAX_ENV_PATH_LEN 8192
-    char	temp[MAX_ENV_PATH_LEN];
-    char_u	*p;
+    // as the maximum length that works.  Add 1 for a NUL byte and 5 for
+    // "PATH=".
+#define MAX_ENV_PATH_LEN (8191 + 1 + 5)
+    WCHAR	temp[MAX_ENV_PATH_LEN];
+    WCHAR	buf[MAX_PATH];
+    int		updated = FALSE;
+    static int	enc_prev = -1;
 
-    if (exe_name == NULL)
+    if (exe_name == NULL || exe_pathw == NULL || enc_prev != enc_codepage)
     {
 	// store the name of the executable, may be used for $VIM
-	GetModuleFileName(NULL, temp, MAX_ENV_PATH_LEN - 1);
-	if (*temp != NUL)
-	    exe_name = FullName_save((char_u *)temp, FALSE);
+	GetModuleFileNameW(NULL, buf, MAX_PATH);
+	if (*buf != NUL)
+	{
+	    if (enc_codepage == -1)
+		enc_codepage = GetACP();
+	    vim_free(exe_name);
+	    exe_name = utf16_to_enc(buf, NULL);
+	    enc_prev = enc_codepage;
+
+	    WCHAR *wp = wcsrchr(buf, '\\');
+	    if (wp != NULL)
+		*wp = NUL;
+	    vim_free(exe_pathw);
+	    exe_pathw = _wcsdup(buf);
+	    updated = TRUE;
+	}
     }
 
-    if (exe_path != NULL || exe_name == NULL)
-	return;
-
-    exe_path = vim_strnsave(exe_name, gettail_sep(exe_name) - exe_name);
-    if (exe_path == NULL)
+    if (exe_pathw == NULL || !updated)
 	return;
 
     // Append our starting directory to $PATH, so that when doing
     // "!xxd" it's found in our starting directory.  Needed because
     // SearchPath() also looks there.
-    p = mch_getenv("PATH");
-    if (p == NULL
-	    || STRLEN(p) + STRLEN(exe_path) + 2 < MAX_ENV_PATH_LEN)
+    WCHAR *p = _wgetenv(L"PATH");
+    if (p == NULL || wcslen(p) + wcslen(exe_pathw) + 2 + 5 < MAX_ENV_PATH_LEN)
     {
+	wcscpy(temp, L"PATH=");
+
 	if (p == NULL || *p == NUL)
-	    temp[0] = NUL;
+	    wcscat(temp, exe_pathw);
 	else
 	{
-	    STRCPY(temp, p);
-	    STRCAT(temp, ";");
+	    wcscat(temp, p);
+
+	    // Check if exe_path is already included in $PATH.
+	    if (wcsstr(temp, exe_pathw) == NULL)
+	    {
+		// Append ';' if $PATH doesn't end with it.
+		size_t len = wcslen(temp);
+		if (temp[len - 1] != L';')
+		    wcscat(temp, L";");
+
+		wcscat(temp, exe_pathw);
+	    }
 	}
-	STRCAT(temp, exe_path);
-	vim_setenv((char_u *)"PATH", (char_u *)temp);
+	_wputenv(temp);
+#ifdef libintl_wputenv
+	libintl_wputenv(temp);
+#endif
     }
 }
 
@@ -538,11 +528,12 @@ vimLoadLib(const char *name)
 
     // NOTE: Do not use mch_dirname() and mch_chdir() here, they may call
     // vimLoadLib() recursively, which causes a stack overflow.
-    if (exe_path == NULL)
-	get_exe_name();
-
-    if (exe_path == NULL)
-	return NULL;
+    if (exe_pathw == NULL)
+    {
+	mch_get_exe_name();
+	if (exe_pathw == NULL)
+	    return NULL;
+    }
 
     WCHAR old_dirw[MAXPATHL];
 
@@ -552,7 +543,7 @@ vimLoadLib(const char *name)
     // Change directory to where the executable is, both to make
     // sure we find a .dll there and to avoid looking for a .dll
     // in the current directory.
-    SetCurrentDirectory((LPCSTR)exe_path);
+    SetCurrentDirectoryW(exe_pathw);
     dll = LoadLibrary(name);
     SetCurrentDirectoryW(old_dirw);
     return dll;
@@ -600,15 +591,20 @@ get_imported_func_info(HINSTANCE hInst, const char *funcname, int info,
     PIMAGE_THUNK_DATA		pIAT;	    // Import Address Table
     PIMAGE_THUNK_DATA		pINT;	    // Import Name Table
     PIMAGE_IMPORT_BY_NAME	pImpName;
+    DWORD			ImpVA;
 
     if (pDOS->e_magic != IMAGE_DOS_SIGNATURE)
 	return NULL;
     pPE = (PIMAGE_NT_HEADERS)(pImage + pDOS->e_lfanew);
     if (pPE->Signature != IMAGE_NT_SIGNATURE)
 	return NULL;
-    pImpDesc = (PIMAGE_IMPORT_DESCRIPTOR)(pImage
-	    + pPE->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]
-							    .VirtualAddress);
+
+    ImpVA = pPE->OptionalHeader
+		.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (ImpVA == 0)
+	return NULL;	// No Import Table
+    pImpDesc = (PIMAGE_IMPORT_DESCRIPTOR)(pImage + ImpVA);
+
     for (; pImpDesc->FirstThunk; ++pImpDesc)
     {
 	if (!pImpDesc->OriginalFirstThunk)
@@ -680,6 +676,65 @@ get_dll_import_func(HINSTANCE hInst, const char *funcname)
 hook_dll_import_func(HINSTANCE hInst, const char *funcname, const void *hook)
 {
     return get_imported_func_info(hInst, funcname, 2, hook);
+}
+#endif
+
+#if defined(FEAT_PYTHON3) || defined(PROTO)
+/*
+ * Check if the specified DLL is a function forwarder.
+ * If yes, return the instance of the forwarded DLL.
+ * If no, return the specified DLL.
+ * If error, return NULL.
+ * This assumes that the DLL forwards all the function to a single DLL.
+ */
+    HINSTANCE
+get_forwarded_dll(HINSTANCE hInst)
+{
+    PBYTE			pImage = (PBYTE)hInst;
+    PIMAGE_DOS_HEADER		pDOS = (PIMAGE_DOS_HEADER)hInst;
+    PIMAGE_NT_HEADERS		pPE;
+    PIMAGE_EXPORT_DIRECTORY	pExpDir;
+    DWORD			ExpVA;
+    DWORD			ExpSize;
+    LPDWORD			pFunctionTable;
+
+    if (pDOS->e_magic != IMAGE_DOS_SIGNATURE)
+	return NULL;
+    pPE = (PIMAGE_NT_HEADERS)(pImage + pDOS->e_lfanew);
+    if (pPE->Signature != IMAGE_NT_SIGNATURE)
+	return NULL;
+
+    ExpVA = pPE->OptionalHeader
+		.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+    ExpSize = pPE->OptionalHeader
+		.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].Size;
+    if (ExpVA == 0)
+	return hInst;	// No Export Directory
+    pExpDir = (PIMAGE_EXPORT_DIRECTORY)(pImage + ExpVA);
+    pFunctionTable = (LPDWORD)(pImage + pExpDir->AddressOfFunctions);
+
+    if (pExpDir->NumberOfNames == 0)
+	return hInst;	// No export names.
+
+    // Check only the first entry.
+    if ((pFunctionTable[0] < ExpVA) || (pFunctionTable[0] >= ExpVA + ExpSize))
+	// The first entry is not a function forwarder.
+	return hInst;
+
+    // The first entry is a function forwarder.
+    // The name is represented as "DllName.FunctionName".
+    const char *name = (const char *)(pImage + pFunctionTable[0]);
+    const char *p = strchr(name, '.');
+    if (p == NULL)
+	return hInst;
+
+    // Extract DllName.
+    char buf[MAX_PATH];
+    if (p - name + 1 > sizeof(buf))
+	return NULL;
+    strncpy(buf, name, p - name);
+    buf[p - name] = '\0';
+    return GetModuleHandleA(buf);
 }
 #endif
 
@@ -863,9 +918,8 @@ null_libintl_wputenv(const wchar_t *envstring UNUSED)
  * Enables or disables the specified privilege.
  */
     static BOOL
-win32_enable_privilege(LPTSTR lpszPrivilege, BOOL bEnable)
+win32_enable_privilege(LPTSTR lpszPrivilege)
 {
-    BOOL		bResult;
     LUID		luid;
     HANDLE		hToken;
     TOKEN_PRIVILEGES	tokenPrivileges;
@@ -882,15 +936,22 @@ win32_enable_privilege(LPTSTR lpszPrivilege, BOOL bEnable)
 
     tokenPrivileges.PrivilegeCount	     = 1;
     tokenPrivileges.Privileges[0].Luid       = luid;
-    tokenPrivileges.Privileges[0].Attributes = bEnable ?
-						    SE_PRIVILEGE_ENABLED : 0;
+    tokenPrivileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
-    bResult = AdjustTokenPrivileges(hToken, FALSE, &tokenPrivileges,
-	    sizeof(TOKEN_PRIVILEGES), NULL, NULL);
+    if (!AdjustTokenPrivileges(hToken, FALSE, &tokenPrivileges, 0, NULL, NULL))
+    {
+	CloseHandle(hToken);
+	return FALSE;
+    }
+
+    if (GetLastError() != ERROR_SUCCESS)
+    {
+	CloseHandle(hToken);
+	return FALSE;
+    }
 
     CloseHandle(hToken);
-
-    return bResult && GetLastError() == ERROR_SUCCESS;
+    return TRUE;
 }
 #endif
 
@@ -906,15 +967,11 @@ win32_enable_privilege(LPTSTR lpszPrivilege, BOOL bEnable)
     void
 PlatformId(void)
 {
-    static int done = FALSE;
-
-    if (done)
-	return;
-
     OSVERSIONINFO ovi;
 
     ovi.dwOSVersionInfoSize = sizeof(ovi);
-    GetVersionEx(&ovi);
+    if (!GetVersionEx(&ovi))
+        return;
 
 #ifdef FEAT_EVAL
     vim_snprintf(windowsVersion, sizeof(windowsVersion), "%d.%d",
@@ -930,9 +987,9 @@ PlatformId(void)
 
 #ifdef HAVE_ACL
     // Enable privilege for getting or setting SACLs.
-    win32_enable_privilege(SE_SECURITY_NAME, TRUE);
+    if (!win32_enable_privilege(SE_SECURITY_NAME))
+        return;
 #endif
-    done = TRUE;
 }
 #ifdef _MSC_VER
 # pragma warning(pop)
@@ -1209,6 +1266,13 @@ decode_key_event(
 				}
 			    }
 			}
+			else if (pker->wVirtualKeyCode == VK_INSERT
+					&& (nModifs & SHIFT) != 0
+					&& (nModifs & ~SHIFT) == 0)
+			{
+			    *pmodifiers = 0;
+			    *pch2 = VirtKeyMap[i].chShift;
+			}
 			else
 			{
 			    *pch2 = VirtKeyMap[i].chAlone;
@@ -1289,9 +1353,9 @@ encode_key_event(dict_T *args, INPUT_RECORD *ir)
 	if (mods)
 	{
 	    // If "modifiers" is explicitly set in the args, then we reset any
-	    // remembered modifer key state that may have been set from earlier
-	    // mod-key-down events, even if they are not yet unset by earlier
-	    // mod-key-up events.
+	    // remembered modifier key state that may have been set from
+	    // earlier mod-key-down events, even if they are not yet unset by
+	    // earlier mod-key-up events.
 	    s_dwMods = 0;
 	    if (mods & MOD_MASK_SHIFT)
 		ker.dwControlKeyState |= SHIFT_PRESSED;
@@ -1998,7 +2062,7 @@ test_mswin_event(char_u *event, dict_T *args)
     }
 
     // Ideally, WriteConsoleInput would be used to inject these low-level
-    // events.  But, this doesnt work well in the CI test environment.  So
+    // events.  But, this doesn't work well in the CI test environment.  So
     // implementing an input_record_buffer instead.
     if (input_encoded)
 	lpEventsWritten = write_input_record_buffer(&ir, 1);
@@ -2669,12 +2733,6 @@ theend:
 #endif // FEAT_GUI_MSWIN
 }
 
-#ifndef PROTO
-# ifndef __MINGW32__
-#  include <shellapi.h>	// required for FindExecutable()
-# endif
-#endif
-
 /*
  * Return TRUE if "name" is an executable file, FALSE if not or it doesn't exist.
  * When returning TRUE and "path" is not NULL save the path and set "*path" to
@@ -2694,6 +2752,8 @@ executable_file(char *name, char_u **path)
     if (attrs & FILE_ATTRIBUTE_REPARSE_POINT)
     {
 	char_u	*res = resolve_appexeclink((char_u *)name);
+	if (res == NULL)
+	    res = resolve_reparse_point((char_u *)name);
 	if (res == NULL)
 	    return FALSE;
 	// The path is already absolute.
@@ -3498,11 +3558,18 @@ mch_init_c(void)
     static void
 mch_exit_c(int r)
 {
+    // Copy flag since stoptermcap() will clear the flag.
+    int fTermcapMode = g_fTermcapMode;
+
     exiting = TRUE;
 
     vtp_exit();
 
     stoptermcap();
+    // Switch back to main screen buffer if TermcapMode was not active.
+    if (!fTermcapMode &&  use_alternate_screen_buffer)
+	vtp_printf("\033[?1049l");
+
     if (g_fWindInitCalled)
 	settmode(TMODE_COOK);
 
@@ -3586,7 +3653,7 @@ mch_check_win(
     int argc UNUSED,
     char **argv UNUSED)
 {
-    get_exe_name();
+    mch_get_exe_name();
 
 #if defined(FEAT_GUI_MSWIN) && !defined(VIMDLL)
     return OK;	    // GUI always has a tty
@@ -3745,8 +3812,7 @@ mch_dirname(
 	if (STRLEN(p) >= (size_t)len)
 	{
 	    // long path name is too long, fall back to short one
-	    vim_free(p);
-	    p = NULL;
+	    VIM_CLEAR(p);
 	}
     }
     if (p == NULL)
@@ -5061,8 +5127,7 @@ mch_system_piped(char *cmd, int options)
 	    )
 	{
 	    len = 0;
-	    if (!(options & SHELL_EXPAND)
-		&& ((options &
+	    if (((options &
 			(SHELL_READ|SHELL_WRITE|SHELL_COOKED))
 		    != (SHELL_READ|SHELL_WRITE|SHELL_COOKED)
 # ifdef FEAT_GUI
@@ -5082,7 +5147,7 @@ mch_system_piped(char *cmd, int options)
 		{
 		    /*
 		     * For pipes: Check for CTRL-C: send interrupt signal to
-		     * child.  Check for CTRL-D: EOF, close pipe to child.
+		     * child.
 		     */
 		    if (len == 1 && cmd != NULL)
 		    {
@@ -5092,10 +5157,22 @@ mch_system_piped(char *cmd, int options)
 			// now put 9 as SIGKILL
 			    TerminateProcess(pi.hProcess, 9);
 			}
-			if (ta_buf[ta_len] == Ctrl_D)
+		    }
+
+		    /*
+		     * Check for CTRL-D: EOF, close pipe to child.
+		     * Ctrl_D may be decorated by _OnChar()
+		     */
+		    if ((len == 1 || len == 4 ) && cmd != NULL)
+		    {
+			if (ta_buf[0] == Ctrl_D
+			    || (ta_buf[0] == CSI
+				&& ta_buf[1] == KS_MODIFIER
+				&& ta_buf[3] == Ctrl_D))
 			{
 			    CloseHandle(g_hChildStd_IN_Wr);
 			    g_hChildStd_IN_Wr = NULL;
+			    len = 0;
 			}
 		    }
 
@@ -5423,17 +5500,13 @@ mch_call_shell(
      * Catch all deadly signals while running the external command, because a
      * CTRL-C, Ctrl-Break or illegal instruction  might otherwise kill us.
      */
-    signal(SIGINT, SIG_IGN);
-#if defined(__GNUC__) && !defined(__MINGW32__)
-    signal(SIGKILL, SIG_IGN);
-#else
-    signal(SIGBREAK, SIG_IGN);
-#endif
-    signal(SIGILL, SIG_IGN);
-    signal(SIGFPE, SIG_IGN);
-    signal(SIGSEGV, SIG_IGN);
-    signal(SIGTERM, SIG_IGN);
-    signal(SIGABRT, SIG_IGN);
+    mch_signal(SIGINT, SIG_IGN);
+    mch_signal(SIGBREAK, SIG_IGN);
+    mch_signal(SIGILL, SIG_IGN);
+    mch_signal(SIGFPE, SIG_IGN);
+    mch_signal(SIGSEGV, SIG_IGN);
+    mch_signal(SIGTERM, SIG_IGN);
+    mch_signal(SIGABRT, SIG_IGN);
 
     if (options & SHELL_COOKED)
 	settmode(TMODE_COOK);	// set to normal mode
@@ -5662,17 +5735,13 @@ mch_call_shell(
     }
     resettitle();
 
-    signal(SIGINT, SIG_DFL);
-#if defined(__GNUC__) && !defined(__MINGW32__)
-    signal(SIGKILL, SIG_DFL);
-#else
-    signal(SIGBREAK, SIG_DFL);
-#endif
-    signal(SIGILL, SIG_DFL);
-    signal(SIGFPE, SIG_DFL);
-    signal(SIGSEGV, SIG_DFL);
-    signal(SIGTERM, SIG_DFL);
-    signal(SIGABRT, SIG_DFL);
+    mch_signal(SIGINT, SIG_DFL);
+    mch_signal(SIGBREAK, SIG_DFL);
+    mch_signal(SIGILL, SIG_DFL);
+    mch_signal(SIGFPE, SIG_DFL);
+    mch_signal(SIGSEGV, SIG_DFL);
+    mch_signal(SIGTERM, SIG_DFL);
+    mch_signal(SIGABRT, SIG_DFL);
 
     return x;
 }
@@ -5718,7 +5787,7 @@ win32_build_env(dict_T *env, garray_T *gap, int is_terminal)
 
     if (env != NULL)
     {
-	for (hi = env->dv_hashtab.ht_array; todo > 0; ++hi)
+	FOR_ALL_HASHTAB_ITEMS(&env->dv_hashtab, hi, todo)
 	{
 	    if (!HASHITEM_EMPTY(hi))
 	    {
@@ -5761,7 +5830,7 @@ win32_build_env(dict_T *env, garray_T *gap, int is_terminal)
 		*((WCHAR*)gap->ga_data + gap->ga_len++) = *p;
 	    p++;
 	}
-	FreeEnvironmentStrings(base);
+	FreeEnvironmentStringsW(base);
 	*((WCHAR*)gap->ga_data + gap->ga_len++) = L'\0';
     }
 
@@ -6276,7 +6345,7 @@ termcap_mode_end(void)
 
     // Switch back to main screen buffer.
     if (exiting && use_alternate_screen_buffer)
-	vtp_printf("\033[?1049l");
+        vtp_printf("\033[?1049l");
 
     if (!USE_WT && (p_rs || exiting))
     {
@@ -6845,7 +6914,7 @@ write_chars(
 	    vim_free(unicodebuf);
 	    unicodebuf = length ? LALLOC_MULT(WCHAR, length) : NULL;
 	    unibuflen = unibuflen ? 0 : length;
-	} while(1);
+	} while (TRUE);
 	cells = mb_string2cells(pchBuf, cbToWrite);
     }
     else // cbToWrite == 1 && *pchBuf == ' ' && enc_utf8
@@ -7349,7 +7418,7 @@ notsgr:
 	{
 	    int l = 2;
 
-	    if (isdigit(s[l]))
+	    if (SAFE_isdigit(s[l]))
 		l++;
 	    if (s[l] == ' ' && s[l + 1] == 'q')
 	    {
@@ -7512,19 +7581,9 @@ mch_total_mem(int special UNUSED)
 
 /*
  * mch_wrename() works around a bug in rename (aka MoveFile) in
- * Windows 95: rename("foo.bar", "foo.bar~") will generate a
- * file whose short file name is "FOO.BAR" (its long file name will
- * be correct: "foo.bar~").  Because a file can be accessed by
- * either its SFN or its LFN, "foo.bar" has effectively been
- * renamed to "foo.bar", which is not at all what was wanted.  This
- * seems to happen only when renaming files with three-character
- * extensions by appending a suffix that does not include ".".
- * Windows NT gets it right, however, with an SFN of "FOO~1.BAR".
- *
- * There is another problem, which isn't really a bug but isn't right either:
+ * Windows, the bug can be demonstrated with the following scenario:
  * When renaming "abcdef~1.txt" to "abcdef~1.txt~", the short name can be
- * "abcdef~1.txt" again.  This has been reported on Windows NT 4.0 with
- * service pack 6.  Doesn't seem to happen on Windows 98.
+ * "abcdef~1.txt" again.
  *
  * Like rename(), returns 0 upon success, non-zero upon failure.
  * Should probably set errno appropriately when errors occur.
@@ -8054,8 +8113,7 @@ copy_extattr(char_u *from, char_u *to)
 	    if (pNtQueryEaFile(h, &iosb, ea, eainfo.EaSize, FALSE,
 			NULL, 0, NULL, TRUE) != STATUS_SUCCESS)
 	    {
-		vim_free(ea);
-		ea = NULL;
+		VIM_CLEAR(ea);
 	    }
 	}
     }
@@ -8487,6 +8545,9 @@ vtp_printf(
     va_list list;
     DWORD   result;
     int	    len;
+
+    if (silent_mode)
+	return 0;
 
     va_start(list, format);
     len = vim_vsnprintf((char *)buf, 100, (char *)format, list);

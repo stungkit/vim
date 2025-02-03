@@ -342,12 +342,13 @@ plines(linenr_T lnum)
 plines_win(
     win_T	*wp,
     linenr_T	lnum,
-    int		winheight)	// when TRUE limit to window height
+    int		limit_winheight)	// when TRUE limit to window height
 {
 #if defined(FEAT_DIFF) || defined(PROTO)
     // Check for filler lines above this buffer line.  When folded the result
     // is one line anyway.
-    return plines_win_nofill(wp, lnum, winheight) + diff_check_fill(wp, lnum);
+    return plines_win_nofill(wp, lnum, limit_winheight)
+						   + diff_check_fill(wp, lnum);
 }
 
 /*
@@ -364,7 +365,7 @@ plines_nofill(linenr_T lnum)
 plines_win_nofill(
     win_T	*wp,
     linenr_T	lnum,
-    int		winheight)	// when TRUE limit to window height
+    int		limit_winheight)	// when TRUE limit to window height
 {
 #endif
     int		lines;
@@ -389,7 +390,7 @@ plines_win_nofill(
     else
 	lines = plines_win_nofold(wp, lnum);
 
-    if (winheight > 0 && lines > wp->w_height)
+    if (limit_winheight && lines > wp->w_height)
 	return wp->w_height;
     return lines;
 }
@@ -496,12 +497,17 @@ plines_win_col(win_T *wp, linenr_T lnum, long column)
     return lines;
 }
 
+/*
+ * Return number of window lines the physical line range from "first" until
+ * "last" will occupy in window "wp". Takes into account folding, 'wrap',
+ * topfill and filler lines beyond the end of the buffer. Limit to "max" lines.
+ */
     int
-plines_m_win(win_T *wp, linenr_T first, linenr_T last)
+plines_m_win(win_T *wp, linenr_T first, linenr_T last, int max)
 {
     int		count = 0;
 
-    while (first <= last)
+    while (first <= last && count < max)
     {
 #ifdef FEAT_FOLDING
 	int	x;
@@ -519,25 +525,33 @@ plines_m_win(win_T *wp, linenr_T first, linenr_T last)
 	{
 #ifdef FEAT_DIFF
 	    if (first == wp->w_topline)
-		count += plines_win_nofill(wp, first, TRUE) + wp->w_topfill;
+		count += plines_win_nofill(wp, first, FALSE) + wp->w_topfill;
 	    else
 #endif
-		count += plines_win(wp, first, TRUE);
+		count += plines_win(wp, first, FALSE);
 	    ++first;
 	}
     }
-    return (count);
+#ifdef FEAT_DIFF
+    if (first == wp->w_buffer->b_ml.ml_line_count + 1)
+	count += diff_check_fill(wp, first);
+#endif
+    return MIN(max, count);
 }
 
     int
 gchar_pos(pos_T *pos)
 {
     char_u	*ptr;
+    int		ptrlen;
 
     // When searching columns is sometimes put at the end of a line.
     if (pos->col == MAXCOL)
 	return NUL;
+    ptrlen = ml_get_len(pos->lnum);
     ptr = ml_get_pos(pos);
+    if (pos->col > ptrlen)
+	return NUL;
     if (has_mbyte)
 	return (*mb_ptr2char)(ptr);
     return (int)*ptr;
@@ -662,19 +676,12 @@ get_mode(char_u *buf)
     }
 #ifdef FEAT_TERMINAL
     else if (term_use_loop())
-	buf[i++] = 't';
-#endif
-    else if (VIsual_active)
     {
-	if (VIsual_select)
-	    buf[i++] = VIsual_mode + 's' - 'v';
-	else
-	{
-	    buf[i++] = VIsual_mode;
-	    if (restart_VIsual_select)
-		buf[i++] = 's';
-	}
+	if (State & MODE_CMDLINE)
+	    buf[i++] = 'c';
+	buf[i++] = 't';
     }
+#endif
     else if (State == MODE_HITRETURN || State == MODE_ASKMORE
 						      || State == MODE_SETWSIZE
 		|| State == MODE_CONFIRM)
@@ -714,6 +721,19 @@ get_mode(char_u *buf)
 	    buf[i++] = 'v';
 	else if (exmode_active == EXMODE_NORMAL)
 	    buf[i++] = 'e';
+	if ((State & MODE_CMDLINE) && cmdline_overstrike())
+	    buf[i++] = 'r';
+    }
+    else if (VIsual_active)
+    {
+	if (VIsual_select)
+	    buf[i++] = VIsual_mode + 's' - 'v';
+	else
+	{
+	    buf[i++] = VIsual_mode;
+	    if (restart_VIsual_select)
+		buf[i++] = 's';
+	}
     }
     else
     {
@@ -937,6 +957,17 @@ get_keystroke(void)
     return n;
 }
 
+// For overflow detection, add a digit safely to an int value.
+    static int
+vim_append_digit_int(int *value, int digit)
+{
+    int x = *value;
+    if (x > ((INT_MAX - digit) / 10))
+	return FAIL;
+    *value = x * 10 + digit;
+    return OK;
+}
+
 /*
  * Get a number from the user.
  * When "mouse_used" is not NULL allow using the mouse.
@@ -969,7 +1000,8 @@ get_number(
 	c = safe_vgetc();
 	if (VIM_ISDIGIT(c))
 	{
-	    n = n * 10 + c - '0';
+	    if (vim_append_digit_int(&n, c - '0') == FAIL)
+		return 0;
 	    msg_putchar(c);
 	    ++typed;
 	}
@@ -1311,6 +1343,32 @@ free_users(void)
 }
 #endif
 
+#if defined(MSWIN) || defined(PROTO)
+/*
+ * Initialize $VIM and $VIMRUNTIME when 'enc' is updated.
+ */
+    void
+init_vimdir(void)
+{
+    int	    mustfree;
+    char_u  *p;
+
+    mch_get_exe_name();
+
+    mustfree = FALSE;
+    didset_vim = FALSE;
+    p = vim_getenv((char_u *)"VIM", &mustfree);
+    if (mustfree)
+	vim_free(p);
+
+    mustfree = FALSE;
+    didset_vimruntime = FALSE;
+    p = vim_getenv((char_u *)"VIMRUNTIME", &mustfree);
+    if (mustfree)
+	vim_free(p);
+}
+#endif
+
 /*
  * Call expand_env() and store the result in an allocated string.
  * This is not very memory efficient, this expects the result to be freed
@@ -1369,9 +1427,6 @@ expand_env_esc(
     int		mustfree;	// var was allocated, need to free it later
     int		at_start = TRUE; // at start of a name
     int		startstr_len = 0;
-#if defined(BACKSLASH_IN_FILENAME) || defined(AMIGA)
-    char_u	*save_dst = dst;
-#endif
 
     if (startstr != NULL)
 	startstr_len = (int)STRLEN(startstr);
@@ -1596,7 +1651,7 @@ expand_env_esc(
 		// with it, skip a character
 		if (after_pathsep(dst, dst + c)
 #if defined(BACKSLASH_IN_FILENAME) || defined(AMIGA)
-			&& (dst == save_dst || dst[-1] != ':')
+			&& dst[c - 1] != ':'
 #endif
 			&& vim_ispathsep(*tail))
 		    ++tail;
@@ -1696,7 +1751,7 @@ vim_version_dir(char_u *vimdir)
  * Vim's version of getenv().
  * Special handling of $HOME, $VIM and $VIMRUNTIME.
  * Also does ACP to 'enc' conversion for Win32.
- * "mustfree" is set to TRUE when returned is allocated, it must be
+ * "mustfree" is set to TRUE when the returned string is allocated.  It must be
  * initialized to FALSE by the caller.
  */
     char_u *
@@ -2060,7 +2115,7 @@ add_user(char_u *user, int need_copy)
     if (user_copy == NULL || *user_copy == NUL || ga_grow(&ga_users, 1) == FAIL)
     {
 	if (need_copy)
-	    vim_free(user);
+	    vim_free(user_copy);
 	return;
     }
     ((char_u **)(ga_users.ga_data))[ga_users.ga_len++] = user_copy;
@@ -2140,7 +2195,7 @@ init_users(void)
 }
 
 /*
- * Function given to ExpandGeneric() to obtain an user names.
+ * Function given to ExpandGeneric() to obtain user names.
  */
     char_u*
 get_users(expand_T *xp UNUSED, int idx)
@@ -2182,7 +2237,7 @@ prepare_to_exit(void)
     // Ignore SIGHUP, because a dropped connection causes a read error, which
     // makes Vim exit and then handling SIGHUP causes various reentrance
     // problems.
-    signal(SIGHUP, SIG_IGN);
+    mch_signal(SIGHUP, SIG_IGN);
 #endif
 
 #ifdef FEAT_GUI
@@ -2751,7 +2806,7 @@ restore_v_event(dict_T *v_event, save_v_event_T *sve)
  * Fires a ModeChanged autocmd event if appropriate.
  */
     void
-may_trigger_modechanged()
+may_trigger_modechanged(void)
 {
 #ifdef FEAT_EVAL
     dict_T	    *v_event;
@@ -2783,3 +2838,22 @@ may_trigger_modechanged()
     restore_v_event(v_event, &save_v_event);
 #endif
 }
+
+// For overflow detection, add a digit safely to a long value.
+    int
+vim_append_digit_long(long *value, int digit)
+{
+    long x = *value;
+    if (x > ((LONG_MAX - (long)digit) / 10))
+	return FAIL;
+    *value = x * 10 + (long)digit;
+    return OK;
+}
+
+// Return something that fits into an int.
+    int
+trim_to_int(vimlong_T x)
+{
+    return x > INT_MAX ? INT_MAX : x < INT_MIN ? INT_MIN : x;
+}
+

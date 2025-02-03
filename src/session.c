@@ -543,7 +543,7 @@ store_session_globals(FILE *fd)
     char_u	*p, *t;
 
     todo = (int)gvht->ht_used;
-    for (hi = gvht->ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(gvht, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -1392,6 +1392,8 @@ theend:
 #ifdef FEAT_SESSION
     vim_free(viewFile);
 #endif
+
+    apply_autocmds(EVENT_SESSIONWRITEPOST, NULL, NULL, FALSE, curbuf);
 }
 
 #if (defined(FEAT_VIMINFO) || defined(FEAT_SESSION)) || defined(PROTO)

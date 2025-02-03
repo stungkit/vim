@@ -55,6 +55,10 @@ silent! endwhile
 
 " In the GUI we can always change the screen size.
 if has('gui_running')
+  if has('gui_gtk')
+    " to keep screendump size unchanged
+    set guifont=Monospace\ 10
+  endif
   set columns=80 lines=25
 endif
 
@@ -92,6 +96,9 @@ set shellslash
 " Common with all tests on all systems.
 source setup.vim
 
+" Needed for RunningWithValgrind().
+source shared.vim
+
 " For consistency run all tests with 'nocompatible' set.
 " This also enables use of line continuation.
 set nocp viminfo+=nviminfo
@@ -111,9 +118,13 @@ if has("win32")
 else
   let s:test_script_fname = expand('%')
 endif
+
 au! SwapExists * call HandleSwapExists()
 func HandleSwapExists()
   if exists('g:ignoreSwapExists')
+    if type(g:ignoreSwapExists) == v:t_string
+      let v:swapchoice = g:ignoreSwapExists
+    endif
     return
   endif
   " Ignore finding a swap file for the test script (the user might be
@@ -183,10 +194,6 @@ function GetAllocId(name)
   return lnum - top - 1
 endfunc
 
-if has('reltime')
-  let g:func_start = reltime()
-endif
-
 " Get the list of swap files in the current directory.
 func s:GetSwapFileList()
   let save_dir = &directory
@@ -208,19 +215,25 @@ endfunc
 for name in s:GetSwapFileList()
   call delete(name)
 endfor
-unlet name
+unlet! name
 
 
 " Invoked when a test takes too much time.
 func TestTimeout(id)
   split test.log
   call append(line('$'), '')
-  call append(line('$'), 'Test timed out: ' .. g:testfunc)
+
+  let text = 'Test timed out: ' .. g:testfunc
+  if g:timeout_start > 0
+    let text ..= strftime(' after %s seconds', localtime() - g:timeout_start)
+  endif
+  call append(line('$'), text)
   write
-  call add(v:errors, 'Test timed out: ' . g:testfunc)
+  call add(v:errors, text)
 
   cquit! 42
 endfunc
+let g:timeout_start = 0
 
 func RunTheTest(test)
   let prefix = ''
@@ -233,7 +246,9 @@ func RunTheTest(test)
   if has('timers')
     " No test should take longer than 30 seconds.  If it takes longer we
     " assume we are stuck and need to break out.
-    let test_timeout_timer = timer_start(30000, 'TestTimeout')
+    let test_timeout_timer =
+          \ timer_start(RunningWithValgrind() ? 50000 : 30000, 'TestTimeout')
+    let g:timeout_start = localtime()
   endif
 
   " Avoid stopping at the "hit enter" prompt
@@ -262,6 +277,8 @@ func RunTheTest(test)
     endtry
   endif
 
+  let skipped = v:false
+
   au VimLeavePre * call EarlyExit(g:testfunc)
   if a:test =~ 'Test_nocatch_'
     " Function handles errors itself.  This avoids skipping commands after the
@@ -271,6 +288,7 @@ func RunTheTest(test)
     if g:skipped_reason != ''
       call add(s:messages, '    Skipped')
       call add(s:skipped, 'SKIPPED ' . a:test . ': ' . g:skipped_reason)
+      let skipped = v:true
     endif
   else
     try
@@ -278,6 +296,7 @@ func RunTheTest(test)
     catch /^\cskipped/
       call add(s:messages, '    Skipped')
       call add(s:skipped, 'SKIPPED ' . a:test . ': ' . substitute(v:exception, '^\S*\s\+', '',  ''))
+      let skipped = v:true
     catch
       call add(v:errors, 'Caught exception in ' . a:test . ': ' . v:exception . ' @ ' . v:throwpoint)
     endtry
@@ -303,6 +322,7 @@ func RunTheTest(test)
 
   if has('timers')
     call timer_stop(test_timeout_timer)
+    let g:timeout_start = 0
   endif
 
   " Clear any autocommands and put back the catch-all for SwapExists.
@@ -367,7 +387,7 @@ func RunTheTest(test)
 
   " close any split windows
   while winnr('$') > 1
-    bwipe!
+    noswapfile bwipe!
   endwhile
 
   " May be editing some buffer, wipe it out.  Then we may end up in another
@@ -384,15 +404,35 @@ func RunTheTest(test)
     endif
   endwhile
 
-  " Check if the test has left any swap files behind.  Delete them before
-  " running tests again, they might interfere.
-  let swapfiles = s:GetSwapFileList()
-  if len(swapfiles) > 0
-    call add(s:messages, "Found swap files: " .. string(swapfiles))
-    for name in swapfiles
-      call delete(name)
-    endfor
+  if !skipped
+    " Check if the test has left any swap files behind.  Delete them before
+    " running tests again, they might interfere.
+    let swapfiles = s:GetSwapFileList()
+    if len(swapfiles) > 0
+      call add(s:messages, "Found swap files: " .. string(swapfiles))
+      for name in swapfiles
+        call delete(name)
+      endfor
+    endif
   endif
+endfunc
+
+function Delete_Xtest_Files()
+  for file in glob('X*', v:false, v:true)
+    if file ==? 'XfakeHOME'
+      " Clean up files created by setup.vim
+      call delete('XfakeHOME', 'rf')
+      continue
+    endif
+    " call add(v:errors, file .. " exists when it shouldn't, trying to delete it!")
+    call delete(file)
+    if !empty(glob(file, v:false, v:true))
+      " call add(v:errors, file .. " still exists after trying to delete it!")
+      if has('unix')
+        call system('rm -rf  ' .. file)
+      endif
+    endif
+  endfor
 endfunc
 
 func AfterTheTest(func_name)
@@ -423,12 +463,10 @@ endfunc
 " This function can be called by a test if it wants to abort testing.
 func FinishTesting()
   call AfterTheTest('')
+  call Delete_Xtest_Files()
 
   " Don't write viminfo on exit.
   set viminfo=
-
-  " Clean up files created by setup.vim
-  call delete('XfakeHOME', 'rf')
 
   if s:fail == 0 && s:fail_expected == 0
     " Success, create the .res file so that make knows it's done.
@@ -484,11 +522,11 @@ func FinishTesting()
   " Add SKIPPED messages
   call extend(s:messages, s:skipped)
 
-  " Append messages to the file "messages"
+  " Append messages to the file "messages", but remove ANSI Escape sequences
   split messages
   call append(line('$'), '')
   call append(line('$'), 'From ' . g:testname . ':')
-  call append(line('$'), s:messages)
+  call append(line('$'), s:messages->map({_, val -> substitute(val, '\%x1b\[\d\?m', '', 'g')}))
   write
 
   qall!
@@ -565,6 +603,16 @@ for g:testfunc in sort(s:tests)
   " A test can set g:test_is_flaky to retry running the test.
   let g:test_is_flaky = 0
 
+  " A test can set g:max_run_nr to change the max retry count.
+  let g:max_run_nr = 5
+  if has('mac')
+    let g:max_run_nr = 10
+  endif
+
+  " By default, give up if the same error occurs.  A test can set
+  " g:giveup_same_error to 0 to not give up on the same error and keep trying.
+  let g:giveup_same_error = 1
+
   let starttime = strftime("%H:%M:%S")
   call RunTheTest(g:testfunc)
 
@@ -580,10 +628,15 @@ for g:testfunc in sort(s:tests)
       call extend(s:messages, v:errors)
 
       let endtime = strftime("%H:%M:%S")
-      call add(total_errors, $'Run {g:run_nr}, {starttime} - {endtime}:')
+      if has('reltime')
+        let suffix = $' in{reltimestr(reltime(g:func_start))} seconds'
+      else
+        let suffix = ''
+      endif
+      call add(total_errors, $'Run {g:run_nr}, {starttime} - {endtime}{suffix}:')
       call extend(total_errors, v:errors)
 
-      if g:run_nr >= 5 || prev_error == v:errors[0]
+      if g:run_nr >= g:max_run_nr || g:giveup_same_error && prev_error == v:errors[0]
         call add(total_errors, 'Flaky test failed too often, giving up')
         let v:errors = total_errors
         break
@@ -594,7 +647,8 @@ for g:testfunc in sort(s:tests)
       " Flakiness is often caused by the system being very busy.  Sleep a
       " couple of seconds to have a higher chance of succeeding the second
       " time.
-      sleep 2
+      let delay = g:run_nr * 2
+      exe 'sleep' delay
 
       let prev_error = v:errors[0]
       let v:errors = []

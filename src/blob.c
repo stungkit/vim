@@ -592,9 +592,10 @@ blob_filter_map(
 	blob_T		*blob_arg,
 	filtermap_T	filtermap,
 	typval_T	*expr,
+	char_u		*arg_errmsg,
 	typval_T	*rettv)
 {
-    blob_T	*b;
+    blob_T	*b = blob_arg;
     int		i;
     typval_T	tv;
     varnumber_T	val;
@@ -609,7 +610,8 @@ blob_filter_map(
 	rettv->v_type = VAR_BLOB;
 	rettv->vval.v_blob = NULL;
     }
-    if ((b = blob_arg) == NULL)
+    if (b == NULL || (filtermap == FILTERMAP_FILTER
+			    && value_check_lock(b->bv_lock, arg_errmsg, TRUE)))
 	return;
 
     b_ret = b;
@@ -623,7 +625,11 @@ blob_filter_map(
     // set_vim_var_nr() doesn't set the type
     set_vim_var_type(VV_KEY, VAR_NUMBER);
 
-    // Create one funccal_T for all eval_expr_typval() calls.
+    int prev_lock = b->bv_lock;
+    if (b->bv_lock == 0)
+	b->bv_lock = VAR_LOCKED;
+
+    // Create one funccall_T for all eval_expr_typval() calls.
     fc = eval_expr_get_funccal(expr, &newtv);
 
     for (i = 0; i < b->bv_ga.ga_len; i++)
@@ -635,29 +641,33 @@ blob_filter_map(
 	if (filter_map_one(&tv, expr, filtermap, fc, &newtv, &rem) == FAIL
 		|| did_emsg)
 	    break;
-	if (newtv.v_type != VAR_NUMBER && newtv.v_type != VAR_BOOL)
+	if (filtermap != FILTERMAP_FOREACH)
 	{
-	    clear_tv(&newtv);
-	    emsg(_(e_invalid_operation_for_blob));
-	    break;
-	}
-	if (filtermap != FILTERMAP_FILTER)
-	{
-	    if (newtv.vval.v_number != val)
-		blob_set(b_ret, i, newtv.vval.v_number);
-	}
-	else if (rem)
-	{
-	    char_u *p = (char_u *)blob_arg->bv_ga.ga_data;
+	    if (newtv.v_type != VAR_NUMBER && newtv.v_type != VAR_BOOL)
+	    {
+		clear_tv(&newtv);
+		emsg(_(e_invalid_operation_for_blob));
+		break;
+	    }
+	    if (filtermap != FILTERMAP_FILTER)
+	    {
+		if (newtv.vval.v_number != val)
+		    blob_set(b_ret, i, newtv.vval.v_number);
+	    }
+	    else if (rem)
+	    {
+		char_u *p = (char_u *)blob_arg->bv_ga.ga_data;
 
-	    mch_memmove(p + i, p + i + 1,
-		    (size_t)b->bv_ga.ga_len - i - 1);
-	    --b->bv_ga.ga_len;
-	    --i;
+		mch_memmove(p + i, p + i + 1,
+			    (size_t)b->bv_ga.ga_len - i - 1);
+		--b->bv_ga.ga_len;
+		--i;
+	    }
 	}
 	++idx;
     }
 
+    b->bv_lock = prev_lock;
     if (fc != NULL)
 	remove_funccal();
 }
@@ -762,7 +772,7 @@ blob_reduce(
 	argv[1].v_type = VAR_NUMBER;
 	argv[1].vval.v_number = blob_get(b, i);
 
-	r = eval_expr_typval(expr, argv, 2, NULL, rettv);
+	r = eval_expr_typval(expr, TRUE, argv, 2, NULL, rettv);
 
 	clear_tv(&argv[0]);
 	if (r == FAIL || called_emsg != called_emsg_start)

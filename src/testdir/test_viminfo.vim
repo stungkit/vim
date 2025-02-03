@@ -614,6 +614,26 @@ func Test_viminfo_bad_syntax2()
   rviminfo Xviminfo
 endfunc
 
+" This used to crash Vim (GitHub issue #12652)
+func Test_viminfo_bad_syntax3()
+  let lines =<< trim END
+    call writefile([], 'Xvbs3.result')
+    qall!
+  END
+  call writefile(lines, 'Xvbs3script', 'D')
+
+  let lines = []
+  call add(lines, '|1,4')
+  " bad viminfo syntax for register barline
+  call add(lines, '|3,1,1,1,1,0,71489,,125') " empty line1
+  call writefile(lines, 'Xviminfo', 'D')
+
+  call RunVim([], [], '--clean -i Xviminfo -S Xvbs3script')
+  call assert_true(filereadable('Xvbs3.result'))
+
+  call delete('Xvbs3.result')
+endfunc
+
 func Test_viminfo_file_marks()
   silent! bwipe test_viminfo.vim
   silent! bwipe Xviminfo
@@ -1277,6 +1297,36 @@ func Test_viminfo_merge_old_jumplist()
   call assert_equal([40, 30, 20, 10], [l[0].lnum, l[1].lnum, l[2].lnum,
         \ l[3].lnum])
   bw!
+endfunc
+
+func Test_viminfo_oldfiles_filter()
+  let v:oldfiles = []
+  let _viminfofile = &viminfofile
+  let &viminfofile=''
+  let lines = [
+	\ '# comment line',
+	\ '*encoding=utf-8',
+	\ "> /tmp/vimrc_one.vim",
+	\ "\t\"\t11\t0",
+	\ "",
+	\ "> /tmp/foobar.txt",
+	\ "\t\"\t11\t0",
+	\ "",
+	\ ]
+  call writefile(lines, 'Xviminfo1', 'D')
+  rviminfo! Xviminfo1
+  new
+  " filter returns a single item
+  let a = execute('filter /vim/ oldfiles')->split('\n')
+  call assert_equal(1, len(a))
+  " filter returns more than a single match
+  let a = execute('filter #tmp# oldfiles')->split('\n')
+  call assert_equal(2, len(a))
+  " don't get prompted for the file, but directly open it
+  filter /vim/ browse oldfiles
+  call assert_equal("/tmp/vimrc_one.vim", expand("%"))
+  bw
+  let &viminfofile = _viminfofile
 endfunc
 
 " vim: shiftwidth=2 sts=2 expandtab

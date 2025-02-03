@@ -540,8 +540,8 @@ cs_add_common(
     char	*fname2 = NULL;
     char	*ppath = NULL;
     int		i;
-    int		len;
-    int		usedlen = 0;
+    size_t	len;
+    size_t	usedlen = 0;
     char_u	*fbuf = NULL;
 
     // get the filename (arg1), expand it, and try to stat it
@@ -549,7 +549,7 @@ cs_add_common(
 	goto add_err;
 
     expand_env((char_u *)arg1, (char_u *)fname, MAXPATHL);
-    len = (int)STRLEN(fname);
+    len = STRLEN(fname);
     fbuf = (char_u *)fname;
     (void)modify_fname((char_u *)":p", FALSE, &usedlen,
 					      (char_u **)&fname, &fbuf, &len);
@@ -1723,7 +1723,7 @@ cs_manage_matches(
 	cs_print_tags_priv(mp, cp, cnt);
 	break;
     default:	// should not reach here
-	iemsg(_(e_fatal_error_in_cs_manage_matches));
+	iemsg(e_fatal_error_in_cs_manage_matches);
 	return NULL;
     }
 
@@ -2114,14 +2114,13 @@ cs_read_prompt(int i)
     int		ch;
     char	*buf = NULL; // buffer for possible error message from cscope
     int		bufpos = 0;
-    char	*cs_emsg;
     int		maxlen;
     static char *eprompt = "Press the RETURN key to continue:";
     int		epromptlen = (int)strlen(eprompt);
     int		n;
 
-    cs_emsg = _(e_cscope_error_str);
     // compute maximum allowed len for Cscope error message
+    char *cs_emsg = _(e_cscope_error_str);
     maxlen = (int)(IOSIZE - strlen(cs_emsg));
 
     for (;;)

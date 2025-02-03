@@ -2,7 +2,12 @@ vim9script
 
 # Language:     Vim script
 # Maintainer:   github user lacygoill
-# Last Change:  2023 Feb 01
+# Last Change:  2024 Dec 26
+#
+# Includes changes from The Vim Project:
+#  - 2024 Feb 09: Fix indent after literal Dict (A. Radev via #13966)
+#  - 2024 Nov 08: Fix indent after :silent! function (D. Kearns via #16009)
+#  - 2024 Dec 26: Fix indent for enums (Jim Zhou via #16293)
 
 # NOTE: Whenever you change the code, make sure the tests are still passing:
 #
@@ -112,10 +117,6 @@ const DICT_KEY: string = '^\s*\%('
     .. '\)'
     .. ':\%(\s\|$\)'
 
-# NOT_A_DICT_KEY {{{3
-
-const NOT_A_DICT_KEY: string = ':\@!'
-
 # END_OF_COMMAND {{{3
 
 const END_OF_COMMAND: string = $'\s*\%($\|||\@!\|{INLINE_COMMENT}\)'
@@ -172,6 +173,7 @@ const MODIFIERS: dict<string> = {
     def: ['export', 'static'],
     class: ['export', 'abstract', 'export abstract'],
     interface: ['export'],
+    enum: ['export'],
 }
 #     ...
 #     class: ['export', 'abstract', 'export abstract'],
@@ -197,13 +199,13 @@ patterns =<< trim eval END
     ldo\=\>!\=
     tabdo\=\>
     windo\>
-    au\%[tocmd]\>.*
-    com\%[mand]\>.*
+    au\%[tocmd]\>!\=.*
+    com\%[mand]\>!\=.*
     g\%[lobal]!\={PATTERN_DELIMITER}.*
     v\%[global]!\={PATTERN_DELIMITER}.*
 END
 
-const HIGHER_ORDER_COMMAND: string = $'\%(^\|{BAR_SEPARATION}\)\s*\<\%({patterns->join('\|')}\){NOT_A_DICT_KEY}'
+const HIGHER_ORDER_COMMAND: string = $'\%(^\|{BAR_SEPARATION}\)\s*\<\%({patterns->join('\|')}\)\%(\s\|$\)\@='
 
 # START_MIDDLE_END {{{3
 
@@ -254,7 +256,7 @@ START_MIDDLE_END = START_MIDDLE_END
         kwds->map((_, kwd: string) => kwd == ''
         ? ''
         : $'\%(^\|{BAR_SEPARATION}\|\<sil\%[ent]\|{HIGHER_ORDER_COMMAND}\)\s*'
-        .. $'\<\%({kwd}\)\>\%(\s*{OPERATOR}\)\@!'))
+        .. $'\<\%({kwd}\)\>\%(\s\|$\|!\)\@=\%(\s*{OPERATOR}\)\@!'))
 
 lockvar! START_MIDDLE_END
 
@@ -279,7 +281,7 @@ patterns = BLOCKS
 
 const ENDS_BLOCK_OR_CLAUSE: string = '^\s*\%(' .. patterns->join('\|') .. $'\){END_OF_COMMAND}'
     .. $'\|^\s*cat\%[ch]\%(\s\+\({PATTERN_DELIMITER}\).*\1\)\={END_OF_COMMAND}'
-    .. $'\|^\s*elseif\=\>\%({OPERATOR}\)\@!'
+    .. $'\|^\s*elseif\=\>\%(\s\|$\)\@=\%(\s*{OPERATOR}\)\@!'
 
 # STARTS_NAMED_BLOCK {{{3
 
@@ -296,7 +298,7 @@ patterns = []
     endfor
 }
 
-const STARTS_NAMED_BLOCK: string = $'^\s*\%(sil\%[ent]\s\+\)\=\%({patterns->join('\|')}\)\>{NOT_A_DICT_KEY}'
+const STARTS_NAMED_BLOCK: string = $'^\s*\%(sil\%[ent]!\=\s\+\)\=\%({patterns->join('\|')}\)\>\%(\s\|$\|!\)\@='
 
 # STARTS_CURLY_BLOCK {{{3
 
@@ -312,7 +314,7 @@ const STARTS_CURLY_BLOCK: string = '\%('
 
 # STARTS_FUNCTION {{{3
 
-const STARTS_FUNCTION: string = $'^\s*\%({MODIFIERS.def}\)\=def\>{NOT_A_DICT_KEY}'
+const STARTS_FUNCTION: string = $'^\s*\%({MODIFIERS.def}\)\=def\>!\=\s\@='
 
 # ENDS_FUNCTION {{{3
 
@@ -385,7 +387,7 @@ const LINE_CONTINUATION_AT_EOL: string = '\%('
     # It can be the start of a dictionary or a block.
     # We only want to match the former.
     .. '\|' .. $'^\%({STARTS_CURLY_BLOCK}\)\@!.*\zs{{'
-    .. '\)\s*\%(\s#.*\)\=$'
+    .. '\)\s*\%(\s#[^{].*\)\=$'
 # }}}2
 # SOL {{{2
 # BACKSLASH_AT_SOL {{{3
@@ -634,6 +636,7 @@ def Offset( # {{{2
     elseif !line_A.isfirst
             && (line_B->EndsWithLineContinuation()
             || line_A.text =~ LINE_CONTINUATION_AT_SOL)
+            && !(line_B->EndsWithComma() && line_A.lnum->IsInside('EnumBlock'))
         return shiftwidth()
     endif
 
@@ -1051,6 +1054,22 @@ def ContinuesBelowBracketBlock( # {{{3
 enddef
 
 def IsInside(lnum: number, syntax: string): bool # {{{3
+    if syntax == 'EnumBlock'
+        var cur_pos = getpos('.')
+        cursor(lnum, 1)
+        var enum_pos = search('^\C\s*\%(export\s\)\=\s*enum\s\+\S\+', 'bnW')
+        var endenum_pos = search('^\C\s*endenum\>', 'bnW')
+        setpos('.', cur_pos)
+
+        if enum_pos == 0 && endenum_pos == 0
+            return false
+        endif
+        if (enum_pos > 0 && (endenum_pos == 0 || enum_pos > endenum_pos))
+            return true
+        endif
+        return false
+    endif
+
     if !exists('b:vimindent')
             || !b:vimindent->has_key($'is_{syntax}')
         return false
@@ -1121,13 +1140,8 @@ def Is_IN_KeywordForLoop(line_1: string, line_2: string): bool # {{{3
 enddef
 
 def InCommentOrString(): bool # {{{3
-    for synID: number in synstack('.', col('.'))
-        if synIDattr(synID, 'name') =~ '\ccomment\|string\|heredoc'
-            return true
-        endif
-    endfor
-
-    return false
+    return synstack('.', col('.'))
+        ->indexof((_, id: number): bool => synIDattr(id, 'name') =~ '\ccomment\|string\|heredoc') >= 0
 enddef
 
 def AlsoClosesBlock(line_B: dict<any>): bool # {{{3

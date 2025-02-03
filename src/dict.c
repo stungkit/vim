@@ -128,7 +128,7 @@ hashtab_free_contents(hashtab_T *ht)
     // Lock the hashtab, we don't want it to resize while freeing items.
     hash_lock(ht);
     todo = (int)ht->ht_used;
-    for (hi = ht->ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(ht, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -532,6 +532,29 @@ dict_add_callback(dict_T *d, char *key, callback_T *cb)
 }
 
 /*
+ * Add a function entry to dictionary "d".
+ * Returns FAIL when out of memory and when key already exists.
+ */
+    int
+dict_add_func(dict_T *d, char *key, ufunc_T *fp)
+{
+    dictitem_T	*item;
+
+    item = dictitem_alloc((char_u *)key);
+    if (item == NULL)
+	return FAIL;
+    item->di_tv.v_type = VAR_FUNC;
+    item->di_tv.vval.v_string = vim_strnsave(fp->uf_name, fp->uf_namelen);
+    if (dict_add(d, item) == FAIL)
+    {
+	dictitem_free(item);
+	return FAIL;
+    }
+    func_ref(item->di_tv.vval.v_string);
+    return OK;
+}
+
+/*
  * Initializes "iter" for iterating over dictionary items with
  * dict_iterate_next().
  * If "var" is not a Dict or an empty Dict then there will be nothing to
@@ -781,7 +804,7 @@ dict2string(typval_T *tv, int copyID, int restore_copyID)
     ga_append(&ga, '{');
 
     todo = (int)d->dv_hashtab.ht_used;
-    for (hi = d->dv_hashtab.ht_array; todo > 0 && !got_int; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(&d->dv_hashtab, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -904,7 +927,7 @@ get_literal_key(char_u **arg)
 eval_dict(char_u **arg, typval_T *rettv, evalarg_T *evalarg, int literal)
 {
     int		evaluate = evalarg == NULL ? FALSE
-					 : evalarg->eval_flags & EVAL_EVALUATE;
+				       : (evalarg->eval_flags & EVAL_EVALUATE);
     dict_T	*d = NULL;
     typval_T	tvkey;
     typval_T	tv;
@@ -1015,6 +1038,15 @@ eval_dict(char_u **arg, typval_T *rettv, evalarg_T *evalarg, int literal)
 		clear_tv(&tvkey);
 	    goto failret;
 	}
+	if (check_typval_is_value(&tv) == FAIL)
+	{
+	    if (evaluate)
+	    {
+		clear_tv(&tvkey);
+		clear_tv(&tv);
+	    }
+	    goto failret;
+	}
 	if (evaluate)
 	{
 	    item = dict_find(d, key, -1);
@@ -1083,6 +1115,33 @@ failret:
 }
 
 /*
+ * Evaluate a literal dictionary: #{key: val, key: val}
+ * "*arg" points to the "#".
+ * On return, "*arg" points to the character after the Dict.
+ * Return OK or FAIL.  Returns NOTDONE for {expr}.
+ */
+    int
+eval_lit_dict(char_u **arg, typval_T *rettv, evalarg_T *evalarg)
+{
+    int		vim9script = in_vim9script();
+    int		ret = OK;
+
+    if (vim9script)
+    {
+	ret = vim9_bad_comment(*arg) ? FAIL : NOTDONE;
+    }
+    else if ((*arg)[1] == '{')
+    {
+	++*arg;
+	ret = eval_dict(arg, rettv, evalarg, TRUE);
+    }
+    else
+	ret = NOTDONE;
+
+    return ret;
+}
+
+/*
  * Go over all entries in "d2" and add them to "d1".
  * When "action" is "error" then a duplicate key is an error.
  * When "action" is "force" then a duplicate key is overwritten.
@@ -1114,7 +1173,8 @@ dict_extend(dict_T *d1, dict_T *d2, char_u *action, char *func_name)
 	type = NULL;
 
     todo = (int)d2->dv_hashtab.ht_used;
-    for (hashitem_T *hi2 = d2->dv_hashtab.ht_array; todo > 0; ++hi2)
+    hashitem_T *hi2;
+    FOR_ALL_HASHTAB_ITEMS(&d2->dv_hashtab, hi2, todo)
     {
 	if (!HASHITEM_EMPTY(hi2))
 	{
@@ -1185,8 +1245,7 @@ dict_lookup(hashitem_T *hi)
 dict_equal(
     dict_T	*d1,
     dict_T	*d2,
-    int		ic,	    // ignore case for strings
-    int		recursive)  // TRUE when used recursively
+    int		ic)	    // ignore case for strings
 {
     hashitem_T	*hi;
     dictitem_T	*item2;
@@ -1203,14 +1262,14 @@ dict_equal(
 	return FALSE;
 
     todo = (int)d1->dv_hashtab.ht_used;
-    for (hi = d1->dv_hashtab.ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(&d1->dv_hashtab, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
 	    item2 = dict_find(d2, hi->hi_key, -1);
 	    if (item2 == NULL)
 		return FALSE;
-	    if (!tv_equal(&HI2DI(hi)->di_tv, &item2->di_tv, ic, recursive))
+	    if (!tv_equal(&HI2DI(hi)->di_tv, &item2->di_tv, ic))
 		return FALSE;
 	    --todo;
 	}
@@ -1233,12 +1292,12 @@ dict_count(dict_T *d, typval_T *needle, int ic)
 	return 0;
 
     todo = (int)d->dv_hashtab.ht_used;
-    for (hi = d->dv_hashtab.ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(&d->dv_hashtab, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
 	    --todo;
-	    if (tv_equal(&HI2DI(hi)->di_tv, needle, ic, FALSE))
+	    if (tv_equal(&HI2DI(hi)->di_tv, needle, ic))
 		++n;
 	}
     }
@@ -1290,12 +1349,18 @@ dict_extend_func(
 
 	action = tv_get_string_chk(&argvars[2]);
 	if (action == NULL)
+	{
+	    if (is_new)
+		dict_unref(d1);
 	    return;
+	}
 	for (i = 0; i < 3; ++i)
 	    if (STRCMP(action, av[i]) == 0)
 		break;
 	if (i == 3)
 	{
+	    if (is_new)
+		dict_unref(d1);
 	    semsg(_(e_invalid_argument_str), action);
 	    return;
 	}
@@ -1304,7 +1369,7 @@ dict_extend_func(
 	action = (char_u *)"force";
 
     if (type != NULL && check_typval_arg_type(type, &argvars[1],
-		func_name, 2) == FAIL)
+							 func_name, 2) == FAIL)
 	return;
     dict_extend(d1, d2, action, func_name);
 
@@ -1319,8 +1384,8 @@ dict_extend_func(
 }
 
 /*
- * Implementation of map() and filter() for a Dict.  Apply "expr" to every
- * item in Dict "d" and return the result in "rettv".
+ * Implementation of map(), filter(), foreach() for a Dict.  Apply "expr" to
+ * every item in Dict "d" and return the result in "rettv".
  */
     void
 dict_filter_map(
@@ -1332,7 +1397,6 @@ dict_filter_map(
 	typval_T	*expr,
 	typval_T	*rettv)
 {
-    int		prev_lock;
     dict_T	*d_ret = NULL;
     hashtab_T	*ht;
     hashitem_T	*hi;
@@ -1352,8 +1416,6 @@ dict_filter_map(
 			&& value_check_lock(d->dv_lock, arg_errmsg, TRUE)))
 	return;
 
-    prev_lock = d->dv_lock;
-
     if (filtermap == FILTERMAP_MAPNEW)
     {
 	if (rettv_dict_alloc(rettv) == FAIL)
@@ -1361,15 +1423,16 @@ dict_filter_map(
 	d_ret = rettv->vval.v_dict;
     }
 
-    // Create one funccal_T for all eval_expr_typval() calls.
+    // Create one funccall_T for all eval_expr_typval() calls.
     fc = eval_expr_get_funccal(expr, &newtv);
 
-    if (filtermap != FILTERMAP_FILTER && d->dv_lock == 0)
+    int prev_lock = d->dv_lock;
+    if (d->dv_lock == 0)
 	d->dv_lock = VAR_LOCKED;
     ht = &d->dv_hashtab;
     hash_lock(ht);
     todo = (int)ht->ht_used;
-    for (hi = ht->ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(ht, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -1384,7 +1447,6 @@ dict_filter_map(
 			    arg_errmsg, TRUE)))
 		break;
 	    set_vim_var_string(VV_KEY, di->di_key, -1);
-	    newtv.v_type = VAR_UNKNOWN;
 	    r = filter_map_one(&di->di_tv, expr, filtermap, fc, &newtv, &rem);
 	    clear_tv(get_vim_var_tv(VV_KEY));
 	    if (r == FAIL || did_emsg)
@@ -1498,11 +1560,11 @@ dict2list(typval_T *argvars, typval_T *rettv, dict2list_T what)
 
     d = argvars[0].vval.v_dict;
     if (d == NULL)
-	// empty dict behaves like an empty dict
+	// NULL dict behaves like an empty dict
 	return;
 
     todo = (int)d->dv_hashtab.ht_used;
-    for (hi = d->dv_hashtab.ht_array; todo > 0; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(&d->dv_hashtab, hi, todo)
     {
 	if (!HASHITEM_EMPTY(hi))
 	{
@@ -1587,7 +1649,7 @@ dict_set_items_ro(dict_T *di)
     hashitem_T	*hi;
 
     // Set readonly
-    for (hi = di->dv_hashtab.ht_array; todo > 0 ; ++hi)
+    FOR_ALL_HASHTAB_ITEMS(&di->dv_hashtab, hi, todo)
     {
 	if (HASHITEM_EMPTY(hi))
 	    continue;

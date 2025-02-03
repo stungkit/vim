@@ -72,7 +72,7 @@ coladvance_force(colnr_T wcol)
  * Get the screen position of character col with a coladd in the cursor line.
  */
     int
-getviscol2(colnr_T col, colnr_T coladd UNUSED)
+getviscol2(colnr_T col, colnr_T coladd)
 {
     colnr_T	x;
     pos_T	pos;
@@ -130,6 +130,7 @@ coladvance2(
     colnr_T	wcol = wcol_arg;
     int		idx;
     char_u	*line;
+    int		linelen;
     colnr_T	col = 0;
     int		csize = 0;
     int		one_more;
@@ -142,15 +143,16 @@ coladvance2(
 		    || (VIsual_active && *p_sel != 'o')
 		    || ((get_ve_flags() & VE_ONEMORE) && wcol < MAXCOL);
     line = ml_get_buf(curbuf, pos->lnum, FALSE);
+    linelen = ml_get_buf_len(curbuf, pos->lnum);
 
     if (wcol >= MAXCOL)
     {
-	    idx = (int)STRLEN(line) - 1 + one_more;
+	    idx = linelen - 1 + one_more;
 	    col = wcol;
 
 	    if ((addspaces || finetune) && !VIsual_active)
 	    {
-		curwin->w_curswant = linetabsize_str(line) + one_more;
+		curwin->w_curswant = linetabsize(curwin, pos->lnum) + one_more;
 		if (curwin->w_curswant > 0)
 		    --curwin->w_curswant;
 	    }
@@ -166,7 +168,7 @@ coladvance2(
 		&& wcol >= (colnr_T)width
 		&& width > 0)
 	{
-	    csize = linetabsize_str(line);
+	    csize = linetabsize(curwin, pos->lnum);
 	    if (csize > 0)
 		csize--;
 
@@ -255,7 +257,6 @@ coladvance2(
 	    else
 	    {
 		// Break a tab
-		int	linelen = (int)STRLEN(line);
 		int	correct = wcol - col - csize + 1; // negative!!
 		char_u	*newline;
 		int	t, s = 0;
@@ -412,7 +413,7 @@ dec(pos_T *lp)
     {
 	// past end of line
 	p = ml_get(lp->lnum);
-	lp->col = (colnr_T)STRLEN(p);
+	lp->col = ml_get_len(lp->lnum);
 	if (has_mbyte)
 	    lp->col -= (*mb_head_off)(p, p + lp->col);
 	return 0;
@@ -435,7 +436,7 @@ dec(pos_T *lp)
 	// there is a prior line
 	lp->lnum--;
 	p = ml_get(lp->lnum);
-	lp->col = (colnr_T)STRLEN(p);
+	lp->col = ml_get_len(lp->lnum);
 	if (has_mbyte)
 	    lp->col -= (*mb_head_off)(p, p + lp->col);
 	return 1;
@@ -515,7 +516,6 @@ get_cursor_rel_lnum(
     void
 check_pos(buf_T *buf, pos_T *pos)
 {
-    char_u *line;
     colnr_T len;
 
     if (pos->lnum > buf->b_ml.ml_line_count)
@@ -523,8 +523,7 @@ check_pos(buf_T *buf, pos_T *pos)
 
     if (pos->col > 0)
     {
-	line = ml_get_buf(buf, pos->lnum, FALSE);
-	len = (colnr_T)STRLEN(line);
+	len = ml_get_buf_len(buf, pos->lnum);
 	if (pos->col > len)
 	    pos->col = len;
     }
@@ -570,7 +569,7 @@ check_cursor_col_win(win_T *win)
     colnr_T      oldcoladd = win->w_cursor.col + win->w_cursor.coladd;
     unsigned int cur_ve_flags = get_ve_flags();
 
-    len = (colnr_T)STRLEN(ml_get_buf(win->w_buffer, win->w_cursor.lnum, FALSE));
+    len = ml_get_buf_len(win->w_buffer, win->w_cursor.lnum);
     if (len == 0)
 	win->w_cursor.col = 0;
     else if (win->w_cursor.col >= len)
@@ -649,7 +648,7 @@ check_visual_pos(void)
     }
     else
     {
-	int len = (int)STRLEN(ml_get(VIsual.lnum));
+	int len = ml_get_len(VIsual.lnum);
 
 	if (VIsual.col > len)
 	{
@@ -817,7 +816,7 @@ static struct modmasktable
     {MOD_MASK_MULTI_CLICK,	MOD_MASK_2CLICK,	(char_u)'2'},
     {MOD_MASK_MULTI_CLICK,	MOD_MASK_3CLICK,	(char_u)'3'},
     {MOD_MASK_MULTI_CLICK,	MOD_MASK_4CLICK,	(char_u)'4'},
-#ifdef MACOS_X
+#if defined(MACOS_X) || defined(FEAT_GUI_GTK)
     {MOD_MASK_CMD,		MOD_MASK_CMD,		(char_u)'D'},
 #endif
     // 'A' must be the last one
@@ -1130,7 +1129,7 @@ simplify_key(int key, int *modifiers)
     int	    key0;
     int	    key1;
 
-    if (!(*modifiers & (MOD_MASK_SHIFT | MOD_MASK_CTRL | MOD_MASK_ALT)))
+    if (!(*modifiers & (MOD_MASK_SHIFT | MOD_MASK_CTRL)))
 	return key;
 
     // TAB is a special case
@@ -1410,7 +1409,7 @@ find_special_key(
 	    bp += 3;	// skip t_xx, xx may be '-' or '>'
 	else if (STRNICMP(bp, "char-", 5) == 0)
 	{
-	    vim_str2nr(bp + 5, NULL, &l, STR2NR_ALL, NULL, NULL, 0, TRUE);
+	    vim_str2nr(bp + 5, NULL, &l, STR2NR_ALL, NULL, NULL, 0, TRUE, NULL);
 	    if (l == 0)
 	    {
 		emsg(_(e_invalid_argument));
@@ -1448,7 +1447,7 @@ find_special_key(
 	    {
 		// <Char-123> or <Char-033> or <Char-0x33>
 		vim_str2nr(last_dash + 6, NULL, &l, STR2NR_ALL, NULL,
-								  &n, 0, TRUE);
+							    &n, 0, TRUE, NULL);
 		if (l == 0)
 		{
 		    emsg(_(e_invalid_argument));
@@ -1543,7 +1542,7 @@ find_special_key(
     int
 may_adjust_key_for_ctrl(int modifiers, int key)
 {
-    if (!(modifiers & MOD_MASK_CTRL))
+    if ((modifiers & MOD_MASK_CTRL) == 0)
 	return key;
 
     if (ASCII_ISALPHA(key))
@@ -1559,6 +1558,13 @@ may_adjust_key_for_ctrl(int modifiers, int key)
 	return '^';
     if (key == '-')
 	return '_';
+
+    // On a Belgian keyboard AltGr $ is ']', on other keyboards '$' can only be
+    // obtained with Shift.  Assume that '$' without shift implies a Belgian
+    // keyboard, where CTRL-$ means CTRL-].
+    if (key == '$' && (modifiers & MOD_MASK_SHIFT) == 0)
+	return ']';
+
     return key;
 }
 
@@ -1575,6 +1581,9 @@ may_remove_shift_modifier(int modifiers, int key)
 {
     if ((modifiers == MOD_MASK_SHIFT
 		|| modifiers == (MOD_MASK_SHIFT | MOD_MASK_ALT)
+#ifdef FEAT_GUI_GTK
+		|| modifiers == (MOD_MASK_SHIFT | MOD_MASK_CMD)
+#endif
 		|| modifiers == (MOD_MASK_SHIFT | MOD_MASK_META))
 	    && ((key >= '!' && key <= '/')
 		|| (key >= ':' && key <= 'Z')
@@ -2466,9 +2475,13 @@ vim_chdir(char_u *new_dir)
 {
     char_u	*dir_name;
     int		r;
+    char_u	*file_to_find = NULL;
+    char	*search_ctx = NULL;
 
     dir_name = find_directory_in_path(new_dir, (int)STRLEN(new_dir),
-						FNAME_MESS, curbuf->b_ffname);
+		     FNAME_MESS, curbuf->b_ffname, &file_to_find, &search_ctx);
+    vim_free(file_to_find);
+    vim_findfile_cleanup(search_ctx);
     if (dir_name == NULL)
 	return -1;
     r = mch_chdir((char *)dir_name);
@@ -3056,3 +3069,48 @@ get_special_pty_type(void)
     return 0;
 #endif
 }
+
+// compare two keyvalue_T structs by case sensitive value
+    int
+cmp_keyvalue_value(const void *a, const void *b)
+{
+    keyvalue_T *kv1 = (keyvalue_T *)a;
+    keyvalue_T *kv2 = (keyvalue_T *)b;
+
+    return STRCMP(kv1->value.string, kv2->value.string);
+}
+
+// compare two keyvalue_T structs by value with length
+    int
+cmp_keyvalue_value_n(const void *a, const void *b)
+{
+    keyvalue_T *kv1 = (keyvalue_T *)a;
+    keyvalue_T *kv2 = (keyvalue_T *)b;
+
+    return STRNCMP(kv1->value.string, kv2->value.string, MAX(kv1->value.length,
+		kv2->value.length));
+}
+
+// compare two keyvalue_T structs by case insensitive value
+    int
+cmp_keyvalue_value_i(const void *a, const void *b)
+{
+    keyvalue_T *kv1 = (keyvalue_T *)a;
+    keyvalue_T *kv2 = (keyvalue_T *)b;
+
+    return STRICMP(kv1->value.string, kv2->value.string);
+}
+
+// compare two keyvalue_T structs by case insensitive ASCII value
+// with value.length
+    int
+cmp_keyvalue_value_ni(const void *a, const void *b)
+{
+    keyvalue_T *kv1 = (keyvalue_T *)a;
+    keyvalue_T *kv2 = (keyvalue_T *)b;
+
+    return vim_strnicmp_asc((char *)kv1->value.string,
+	    (char *)kv2->value.string, MAX(kv1->value.length,
+		    kv2->value.length));
+}
+

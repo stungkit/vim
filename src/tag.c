@@ -144,7 +144,6 @@ static void print_tag_list(int new_tag, int use_tagstack, int num_matches, char_
 #if defined(FEAT_QUICKFIX) && defined(FEAT_EVAL)
 static int add_llist_tags(char_u *tag, int num_matches, char_u **matches);
 #endif
-static void tagstack_clear_entry(taggy_T *item);
 
 static char_u	*tagmatchname = NULL;	// name of last used tag
 
@@ -171,7 +170,7 @@ static callback_T tfu_cb;	    // 'tagfunc' callback function
  * a function (string), or function(<name>) or funcref(<name>) or a lambda.
  */
     char *
-set_tagfunc_option(void)
+did_set_tagfunc(optset_T *args UNUSED)
 {
 #ifdef FEAT_EVAL
     free_callback(&tfu_cb);
@@ -289,14 +288,6 @@ do_tag(
     static char_u	**matches = NULL;
     static int		flags;
 
-#ifdef FEAT_EVAL
-    if (tfu_in_use)
-    {
-	emsg(_(e_cannot_modify_tag_stack_within_tagfunc));
-	return FALSE;
-    }
-#endif
-
 #ifdef EXITFREE
     if (type == DT_FREE)
     {
@@ -309,6 +300,17 @@ do_tag(
 	return FALSE;
     }
 #endif
+
+#ifdef FEAT_EVAL
+    if (tfu_in_use)
+    {
+	emsg(_(e_cannot_modify_tag_stack_within_tagfunc));
+	return FALSE;
+    }
+#endif
+
+    if (postponed_split == 0 && !check_can_set_curbuf_forceit(forceit))
+	return FALSE;
 
     if (type == DT_HELP)
     {
@@ -395,7 +397,7 @@ do_tag(
 		    tagstack_clear_entry(&tagstack[0]);
 		    for (i = 1; i < tagstacklen; ++i)
 			tagstack[i - 1] = tagstack[i];
-		    --tagstackidx;
+		    tagstack[--tagstackidx].user_data = NULL;
 		}
 
 		/*
@@ -1194,7 +1196,7 @@ add_llist_tags(
 	// Get the line number or the search pattern used to locate
 	// the tag.
 	lnum = 0;
-	if (isdigit(*tagp.command))
+	if (SAFE_isdigit(*tagp.command))
 	    // Line number is used to locate the tag
 	    lnum = atol((char *)tagp.command);
 	else
@@ -3410,6 +3412,11 @@ get_tagfname(
 	    // move the filename one char forward and truncate the
 	    // filepath with a NUL
 	    filename = gettail(buf);
+	    if (r_ptr != NULL)
+	    {
+		STRMOVE(r_ptr + 1, r_ptr);
+		++r_ptr;
+	    }
 	    STRMOVE(filename + 1, filename);
 	    *filename++ = NUL;
 
@@ -3705,6 +3712,9 @@ jumpto_tag(
     size_t	len;
     char_u	*lbuf;
 
+    if (postponed_split == 0 && !check_can_set_curbuf_forceit(forceit))
+	return FAIL;
+
     // Make a copy of the line, it can become invalid when an autocommand calls
     // back here recursively.
     len = matching_line_len(lbuf_arg) + 1;
@@ -3816,18 +3826,10 @@ jumpto_tag(
 
 	if (existing_buf != NULL)
 	{
-	    win_T *wp = NULL;
-
-	    if (swb_flags & SWB_USEOPEN)
-		wp = buf_jump_open_win(existing_buf);
-
-	    // If 'switchbuf' contains "usetab": jump to first window in any tab
-	    // page containing "existing_buf" if one exists
-	    if (wp == NULL && (swb_flags & SWB_USETAB))
-		wp = buf_jump_open_tab(existing_buf);
-	    // We've switched to the buffer, the usual loading of the file must
-	    // be skipped.
-	    if (wp != NULL)
+	    // If 'switchbuf' is set jump to the window containing "buf".
+	    if (swbuf_goto_win_with_buf(existing_buf) != NULL)
+		// We've switched to the buffer, the usual loading of the file
+		// must be skipped.
 		getfile_result = GETFILE_SAME_FILE;
 	}
     }
@@ -3837,7 +3839,8 @@ jumpto_tag(
 	if (win_split(postponed_split > 0 ? postponed_split : 0,
 						postponed_split_flags) == FAIL)
 	{
-	    --RedrawingDisabled;
+	    if (RedrawingDisabled > 0)
+		--RedrawingDisabled;
 	    goto erret;
 	}
 	RESET_BINDING(curwin);
@@ -3902,6 +3905,8 @@ jumpto_tag(
 	    str = skip_regexp(pbuf + 1, pbuf[0], FALSE) + 1;
 	if (str > pbuf_end - 1)	// search command with nothing following
 	{
+	    size_t pbuflen = pbuf_end - pbuf;
+
 	    save_p_ws = p_ws;
 	    save_p_ic = p_ic;
 	    save_p_scs = p_scs;
@@ -3915,7 +3920,7 @@ jumpto_tag(
 	    else
 		// start search before first line
 		curwin->w_cursor.lnum = 0;
-	    if (do_search(NULL, pbuf[0], pbuf[0], pbuf + 1, (long)1,
+	    if (do_search(NULL, pbuf[0], pbuf[0], pbuf + 1, pbuflen - 1, (long)1,
 							 search_options, NULL))
 		retval = OK;
 	    else
@@ -3927,7 +3932,7 @@ jumpto_tag(
 		 * try again, ignore case now
 		 */
 		p_ic = TRUE;
-		if (!do_search(NULL, pbuf[0], pbuf[0], pbuf + 1, (long)1,
+		if (!do_search(NULL, pbuf[0], pbuf[0], pbuf + 1, pbuflen - 1, (long)1,
 							 search_options, NULL))
 		{
 		    /*
@@ -3937,14 +3942,14 @@ jumpto_tag(
 		    (void)test_for_static(&tagp);
 		    cc = *tagp.tagname_end;
 		    *tagp.tagname_end = NUL;
-		    sprintf((char *)pbuf, "^%s\\s\\*(", tagp.tagname);
-		    if (!do_search(NULL, '/', '/', pbuf, (long)1,
+		    pbuflen = vim_snprintf((char *)pbuf, LSIZE, "^%s\\s\\*(", tagp.tagname);
+		    if (!do_search(NULL, '/', '/', pbuf, pbuflen, (long)1,
 							 search_options, NULL))
 		    {
 			// Guess again: "^char * \<func  ("
-			sprintf((char *)pbuf, "^\\[#a-zA-Z_]\\.\\*\\<%s\\s\\*(",
+			pbuflen = vim_snprintf((char *)pbuf, LSIZE, "^\\[#a-zA-Z_]\\.\\*\\<%s\\s\\*(",
 								tagp.tagname);
-			if (!do_search(NULL, '/', '/', pbuf, (long)1,
+			if (!do_search(NULL, '/', '/', pbuf, pbuflen, (long)1,
 							 search_options, NULL))
 			    found = 0;
 		    }
@@ -4040,11 +4045,13 @@ jumpto_tag(
 	}
 #endif
 
-	--RedrawingDisabled;
+	if (RedrawingDisabled > 0)
+	    --RedrawingDisabled;
     }
     else
     {
-	--RedrawingDisabled;
+	if (RedrawingDisabled > 0)
+	    --RedrawingDisabled;
 	got_int = FALSE;  // don't want entering window to fail
 
 	if (postponed_split)		// close the window
@@ -4230,7 +4237,7 @@ find_extra(char_u **pp)
 /*
  * Free a single entry in a tag stack
  */
-    static void
+    void
 tagstack_clear_entry(taggy_T *item)
 {
     VIM_CLEAR(item->tagname);

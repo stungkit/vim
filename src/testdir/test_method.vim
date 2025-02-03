@@ -62,7 +62,7 @@ func Test_dict_method()
   call assert_equal(2, d->remove("two"))
   let d.two = 2
   call assert_fails('let x = d->repeat(2)', 'E731:')
-  call assert_fails('let x = d->reverse()', 'E899:')
+  call assert_fails('let x = d->reverse()', 'E1252:')
   call assert_fails('let x = d->sort()', 'E686:')
   call assert_equal("{'one': 1, 'two': 2, 'three': 3}", d->string())
   call assert_equal(v:t_dict, d->type())
@@ -136,6 +136,13 @@ func Test_method_syntax()
   call assert_fails('eval [1, 2, 3] ->sort ()', 'E274:')
   call assert_fails('eval [1, 2, 3]-> sort ()', 'E274:')
   call assert_fails('eval [1, 2, 3]-> sort()', 'E274:')
+
+  " Test for using a method name containing a curly brace name
+  let s = 'len'
+  call assert_equal(4, "xxxx"->str{s}())
+
+  " Test for using a method in an interpolated string
+  call assert_equal('4', $'{"xxxx"->strlen()}')
 endfunc
 
 func Test_method_lambda()

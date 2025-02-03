@@ -1,4 +1,5 @@
 /* os_unix.c */
+sighandler_T mch_signal(int sig, sighandler_T func);
 int mch_chdir(char *path);
 void mch_write(char_u *s, int len);
 int mch_inchar(char_u *buf, int maxlen, long wtime, int tb_change_cnt);
@@ -36,6 +37,7 @@ long mch_getperm(char_u *name);
 int mch_setperm(char_u *name, long perm);
 int mch_fsetperm(int fd, long perm);
 void mch_copy_sec(char_u *from_file, char_u *to_file);
+void mch_copy_xattr(char_u *from_file, char_u *to_file);
 vim_acl_T mch_get_acl(char_u *fname);
 void mch_set_acl(char_u *fname, vim_acl_T aclent);
 void mch_free_acl(vim_acl_T aclent);
@@ -74,6 +76,7 @@ int mch_rename(const char *src, const char *dest);
 int gpm_available(void);
 int gpm_enabled(void);
 int mch_libcall(char_u *libname, char_u *funcname, char_u *argstring, int argint, char_u **string_result, int *number_result);
+int mch_get_random(char_u *buf, int len);
 void setup_term_clip(void);
 void start_xterm_trace(int button);
 void stop_xterm_trace(void);
@@ -88,4 +91,5 @@ void xsmp_close(void);
 void stop_timeout(void);
 volatile sig_atomic_t *start_timeout(long msec);
 void delete_timer(void);
+void mch_calc_cell_size(struct cellsize *cs_out);
 /* vim: set ft=c : */
