@@ -98,6 +98,7 @@ runtime/compiler/se.vim			@dkearns
 runtime/compiler/shellcheck.vim		@dkearns
 runtime/compiler/sml.vim		@dkearns
 runtime/compiler/spectral.vim		@romainl
+runtime/compiler/svelte-check.vim		@Konfekt
 runtime/compiler/stylelint.vim		@dkearns
 runtime/compiler/tcl.vim		@dkearns
 runtime/compiler/tidy.vim		@dkearns
@@ -153,6 +154,7 @@ runtime/ftplugin/debchangelog.vim	@jamessan
 runtime/ftplugin/debcontrol.vim		@jamessan
 runtime/ftplugin/debsources.vim		@jamessan
 runtime/ftplugin/desktop.vim		@e-kwsm
+runtime/ftplugin/dnsmasq.vim		@dringsim
 runtime/ftplugin/dosbatch.vim		@mrdubya
 runtime/ftplugin/editorconfig.vim	@ribru17
 runtime/ftplugin/eiffel.vim		@dkearns
@@ -223,6 +225,7 @@ runtime/ftplugin/liquid.vim		@tpope
 runtime/ftplugin/lua.vim		@dkearns
 runtime/ftplugin/lc.vim			@ribru17
 runtime/ftplugin/lynx.vim		@dkearns
+runtime/ftplugin/m17ndb.vim		@dseomn
 runtime/ftplugin/m3build.vim		@dkearns
 runtime/ftplugin/m3quake.vim		@dkearns
 runtime/ftplugin/markdown.vim		@tpope
@@ -365,6 +368,7 @@ runtime/indent/ld.vim			@dkearns
 runtime/indent/less.vim			@genoma
 runtime/indent/liquid.vim		@tpope
 runtime/indent/lua.vim			@marcuscf
+runtime/indent/m17ndb.vim		@dseomn
 runtime/indent/make.vim			@dkearns
 runtime/indent/meson.vim		@Liambeguin
 runtime/indent/mma.vim			@dkearns
@@ -531,6 +535,7 @@ runtime/syntax/liquid.vim		@tpope
 runtime/syntax/lua.vim			@marcuscf
 runtime/syntax/lyrics.vim		@ObserverOfTime
 runtime/syntax/lynx.vim			@dkearns
+runtime/syntax/m17ndb.vim		@dseomn
 runtime/syntax/m3build.vim		@dkearns
 runtime/syntax/m3quake.vim		@dkearns
 runtime/syntax/mailcap.vim		@dkearns

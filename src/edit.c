@@ -146,6 +146,7 @@ edit(
 #ifdef FEAT_CONCEAL
     int		cursor_line_was_concealed;
 #endif
+    int		ins_completion = FALSE;
 
     // Remember whether editing was restarted after CTRL-O.
     did_restart_edit = restart_edit;
@@ -636,10 +637,11 @@ edit(
 	 * and the cursor is still in the completed word.  Only when there is
 	 * a match, skip this when no matches were found.
 	 */
-	if (ins_compl_active()
-		&& pum_wanted()
-		&& curwin->w_cursor.col >= ins_compl_col()
-		&& ins_compl_has_shown_match())
+	ins_completion = ins_compl_active()
+	    && curwin->w_cursor.col >= ins_compl_col()
+	    && ins_compl_has_shown_match();
+
+	if (ins_completion && pum_wanted())
 	{
 	    // BS: Delete one character from "compl_leader".
 	    if ((c == K_BS || c == Ctrl_H)
@@ -697,6 +699,8 @@ edit(
 		    ins_compl_delete();
 	    }
 	}
+	else if (ins_completion && !pum_wanted() && ins_compl_preinsert_effect())
+	    ins_compl_delete();
 
 	// Prepare for or stop CTRL-X mode.  This doesn't do completion, but
 	// it does fix up the text when finishing completion.
@@ -2054,7 +2058,7 @@ insert_special(
 	    if (stop_arrow() == FAIL)
 		return;
 	    p[len - 1] = NUL;
-	    ins_str(p);
+	    ins_str(p, len - 1);
 	    AppendToRedobuffLit(p, -1);
 	    ctrlv = FALSE;
 	}
@@ -2271,7 +2275,7 @@ insertchar(
 	do_digraph(buf[i-1]);		// may be the start of a digraph
 #endif
 	buf[i] = NUL;
-	ins_str(buf);
+	ins_str(buf, i);
 	if (flags & INSCHAR_CTRLV)
 	{
 	    redo_literal(*buf);
@@ -4296,7 +4300,7 @@ ins_bs(
 		    ins_char(' ');
 		else
 		{
-		    ins_str((char_u *)" ");
+		    ins_str((char_u *)" ", 1);
 		    if ((State & REPLACE_FLAG))
 			replace_push(NUL);
 		}
@@ -4972,7 +4976,7 @@ ins_tab(void)
 	    ins_char(' ');
 	else
 	{
-	    ins_str((char_u *)" ");
+	    ins_str((char_u *)" ", 1);
 	    if (State & REPLACE_FLAG)	    // no char replaced
 		replace_push(NUL);
 	}

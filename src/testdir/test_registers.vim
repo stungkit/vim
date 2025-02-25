@@ -1102,4 +1102,42 @@ func Test_clipboard_regs_not_working2()
   let $DISPLAY=display
 endfunc
 
+" This caused use-after-free
+func Test_register_redir_display()
+  CheckFeature clipboard
+  " don't touch the clipboard, so only perform this, when the clipboard is not working
+  if has("clipboard_working")
+    throw "Skipped: skip touching the clipboard register!"
+  endif
+  let @"=''
+  redir @+>
+  disp +"
+  redir END
+  call assert_equal("\nType Name Content", getreg('+'))
+  let a = [getreg('1'), getregtype('1')]
+  let @1='register 1'
+  redir @+
+  disp 1
+  redir END
+  call assert_equal("register 1", getreg('1'))
+  call setreg(1, a[0], a[1])
+endfunc
+
+" this caused an illegal memory access and a crash
+func Test_register_cursor_column_negative()
+  CheckRunVimInTerminal
+  let script =<< trim END
+    f XREGISTER
+    call setline(1, 'abcdef a')
+    call setreg("a", "\n", 'c')
+    call cursor(1, 7)
+    call feedkeys("i\<C-R>\<C-P>azyx$#\<esc>", 't')
+  END
+  call writefile(script, 'XRegister123', 'D')
+  let buf = RunVimInTerminal('-S XRegister123', {})
+  call term_sendkeys(buf, "\<c-g>")
+  call WaitForAssert({-> assert_match('XREGISTER', term_getline(buf, 19))})
+  call StopVimInTerminal(buf)
+endfunc
+
 " vim: shiftwidth=2 sts=2 expandtab

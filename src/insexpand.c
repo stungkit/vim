@@ -1368,7 +1368,7 @@ ins_compl_build_pum(void)
 			compl_shown_match = compl;
 		}
 
-		if (!shown_match_ok && compl == compl_shown_match && !compl_no_select)
+		if (!shown_match_ok && compl == compl_shown_match)
 		{
 		    cur = i;
 		    shown_match_ok = TRUE;
@@ -1889,6 +1889,7 @@ ins_compl_clear(void)
     compl_cont_status = 0;
     compl_started = FALSE;
     compl_matches = 0;
+    compl_selected_item = -1;
     compl_ins_end_col = 0;
     VIM_CLEAR_STRING(compl_pattern);
     VIM_CLEAR_STRING(compl_leader);
@@ -2108,7 +2109,7 @@ ins_compl_new_leader(void)
 	compl_restarting = FALSE;
     }
 
-    compl_enter_selects = !compl_used_match;
+    compl_enter_selects = !compl_used_match && compl_selected_item != -1;
 
     // Show the popup menu with a different set of matches.
     ins_compl_show_pum();
@@ -4401,7 +4402,7 @@ ins_compl_delete(void)
     // In insert mode: Delete the typed part.
     // In replace mode: Put the old characters back, if any.
     int col = compl_col + (compl_status_adding() ? compl_length : 0);
-    char_u  *remaining = NULL;
+    string_T	remaining = {NULL, 0};
     int	    orig_col;
     int	has_preinsert = ins_compl_preinsert_effect();
     if (has_preinsert)
@@ -4414,20 +4415,21 @@ ins_compl_delete(void)
     {
 	if (curwin->w_cursor.col < ml_get_curline_len())
 	{
-	    char_u *line = ml_get_curline();
-	    remaining = vim_strnsave(line + curwin->w_cursor.col,
-				(size_t)STRLEN(line + curwin->w_cursor.col));
-	    if (remaining == NULL)
+	    char_u *line = ml_get_cursor();
+	    remaining.length = ml_get_cursor_len();
+	    remaining.string = vim_strnsave(line, remaining.length);
+	    if (remaining.string == NULL)
 		return;
 	}
 	while (curwin->w_cursor.lnum > compl_lnum)
 	{
 	    if (ml_delete(curwin->w_cursor.lnum) == FAIL)
 	    {
-		if (remaining)
-		    VIM_CLEAR(remaining);
+		if (remaining.string)
+		    vim_free(remaining.string);
 		return;
 	    }
+	    deleted_lines_mark(curwin->w_cursor.lnum, 1L);
 	    curwin->w_cursor.lnum--;
 	}
 	// move cursor to end of line
@@ -4438,20 +4440,20 @@ ins_compl_delete(void)
     {
 	if (stop_arrow() == FAIL)
 	{
-	    if (remaining)
-		VIM_CLEAR(remaining);
+	    if (remaining.string)
+		vim_free(remaining.string);
 	    return;
 	}
 	backspace_until_column(col);
 	compl_ins_end_col = curwin->w_cursor.col;
     }
 
-    if (remaining != NULL)
+    if (remaining.string != NULL)
     {
 	orig_col = curwin->w_cursor.col;
-	ins_str(remaining);
+	ins_str(remaining.string, remaining.length);
 	curwin->w_cursor.col = orig_col;
-	vim_free(remaining);
+	vim_free(remaining.string);
     }
     // TODO: is this sufficient for redrawing?  Redrawing everything causes
     // flicker, thus we can't do that.
@@ -4471,6 +4473,7 @@ ins_compl_expand_multiple(char_u *str)
 {
     char_u	*start = str;
     char_u	*curr = str;
+    int		base_indent = get_indent();
 
     while (*curr != NUL)
     {
@@ -4481,7 +4484,7 @@ ins_compl_expand_multiple(char_u *str)
 		ins_char_bytes(start, (int)(curr - start));
 
 	    // Handle newline
-	    open_line(FORWARD, OPENLINE_KEEPTRAIL, FALSE, NULL);
+	    open_line(FORWARD, OPENLINE_KEEPTRAIL | OPENLINE_FORCE_INDENT, base_indent, NULL);
 	    start = curr + 1;
 	}
 	curr++;

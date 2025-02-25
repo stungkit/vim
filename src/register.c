@@ -2249,7 +2249,7 @@ error:
 	    // Put the '] mark on the first byte of the last inserted character.
 	    // Correct the length for change in indent.
 	    curbuf->b_op_end.lnum = new_lnum;
-	    col = (colnr_T)y_array[y_size - 1].length - lendiff;
+	    col = MAX(0, (colnr_T)y_array[y_size - 1].length - lendiff);
 	    if (col > 1)
 	    {
 		curbuf->b_op_end.col = col - 1;
@@ -2420,7 +2420,8 @@ ex_display(exarg_T *eap)
 
 #ifdef FEAT_EVAL
 	if (name == MB_TOLOWER(redir_reg)
-		|| (redir_reg == '"' && yb == y_previous))
+		|| (vim_strchr((char_u *)"\"*+", redir_reg) != NULL &&
+		    (yb == y_previous || yb == &y_regs[0])))
 	    continue;	    // do not list register being written to, the
 			    // pointer can be freed
 #endif
