@@ -40,6 +40,8 @@ static int  message_win_time = 3000;
 // hit-enter prompt.
 static int    start_message_win_timer = FALSE;
 
+static int popup_on_cmdline = FALSE;
+
 static void may_start_message_win_timer(win_T *wp);
 #endif
 
@@ -696,9 +698,6 @@ popup_highlight_curline(win_T *wp)
 	if (!sign_exists_by_name(sign_name))
 	{
 	    char *linehl = "PopupSelected";
-
-	    if (syn_name2id((char_u *)linehl) == 0)
-		linehl = "PmenuSel";
 	    sign_define_by_name(sign_name, NULL, (char_u *)linehl, NULL, NULL, NULL,
 		    NULL, SIGN_DEF_PRIO);
 	}
@@ -2006,10 +2005,8 @@ popup_update_color(win_T *wp, create_type_T type)
 {
     char    *hiname = type == TYPE_MESSAGE_WIN
 				       ? "MessageWindow" : "PopupNotification";
-    int		nr = syn_name2id((char_u *)hiname);
-
     set_string_option_direct_in_win(wp, (char_u *)"wincolor", -1,
-		(char_u *)(nr == 0 ? "WarningMsg" : hiname),
+		(char_u *)hiname,
 		OPT_FREE|OPT_LOCAL, 0);
 }
 
@@ -4569,7 +4566,19 @@ popup_hide_info(void)
     win_T *wp = popup_find_info_window();
 
     if (wp != NULL)
+    {
+	popup_on_cmdline = wp->w_popup_flags & POPF_ON_CMDLINE;
 	popup_hide(wp);
+    }
+}
+
+/*
+ * Returns TRUE if a popup extends into the cmdline area.
+ */
+    int
+popup_overlaps_cmdline(void)
+{
+    return popup_on_cmdline;
 }
 
 /*

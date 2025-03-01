@@ -3162,34 +3162,53 @@ object_required_error(typval_T *tv)
 }
 
 /*
- * Accessing the member of an object stored in a variable of type "any".
+ * Accessing the variable or method of an object or a class stored in a
+ * variable of type "any".
  * Returns OK if the member variable is present.
  * Returns FAIL if the variable is not found.
  */
     static int
-any_var_get_obj_member(class_T *current_class, isn_T *iptr, typval_T *tv)
+var_any_get_oc_member(class_T *current_class, isn_T *iptr, typval_T *tv)
 {
-    object_T	*obj = tv->vval.v_object;
+    int		is_object = tv->v_type == VAR_OBJECT;
+    class_T	*tv_cl;
+    object_T	*obj = NULL;
     typval_T	mtv;
 
-    if (obj == NULL)
+    if (is_object)
     {
-	SOURCING_LNUM = iptr->isn_lnum;
-	emsg(_(e_using_null_object));
-	return FAIL;
+	obj = tv->vval.v_object;
+	if (obj == NULL)
+	{
+	    SOURCING_LNUM = iptr->isn_lnum;
+	    emsg(_(e_using_null_object));
+	    return FAIL;
+	}
+	tv_cl = obj->obj_class;
+    }
+    else
+    {
+	tv_cl = tv->vval.v_class;
+	if (tv_cl == NULL)
+	{
+	    SOURCING_LNUM = iptr->isn_lnum;
+	    emsg(_(e_using_null_class));
+	    return FAIL;
+	}
     }
 
-    // get_member_tv() needs the object information in the typval argument.
-    // So set the object information.
+    // get_member_tv() needs the class/object information in the typval
+    // argument.  So set the object information.
     copy_tv(tv, &mtv);
 
-    // 'name' can either be a object variable or a object method
+    // 'name' can either be an instance or class variable or method
     int		namelen = (int)STRLEN(iptr->isn_arg.string);
     int		save_did_emsg = did_emsg;
 
-    if (get_member_tv(obj->obj_class, TRUE, iptr->isn_arg.string, namelen,
+    if (get_member_tv(tv_cl, is_object, iptr->isn_arg.string, namelen,
 						current_class, &mtv) == OK)
     {
+	// instance or class variable
 	copy_tv(&mtv, tv);
 	clear_tv(&mtv);
 	return OK;
@@ -3198,31 +3217,36 @@ any_var_get_obj_member(class_T *current_class, isn_T *iptr, typval_T *tv)
     if (did_emsg != save_did_emsg)
 	return FAIL;
 
-    // could be a member function
-    ufunc_T	*obj_method;
-    int		obj_method_idx;
+    // could be a class or instance method
+    ufunc_T	*oc_method;
+    int		oc_method_idx;
 
-    obj_method = method_lookup(obj->obj_class, VAR_OBJECT,
-				iptr->isn_arg.string, namelen,
-				&obj_method_idx);
-    if (obj_method == NULL)
+    oc_method = method_lookup(tv_cl, tv->v_type, iptr->isn_arg.string,
+						namelen, &oc_method_idx);
+    if (oc_method == NULL)
     {
+	char	*msg;
+
 	SOURCING_LNUM = iptr->isn_lnum;
-	semsg(_(e_variable_not_found_on_object_str_str), iptr->isn_arg.string,
-		obj->obj_class->class_name);
+	if (is_object)
+	    msg = e_variable_not_found_on_object_str_str;
+	else
+	    msg = e_class_variable_str_not_found_in_class_str;
+	semsg(_(msg), iptr->isn_arg.string, tv_cl->class_name);
 	return FAIL;
     }
 
     // Protected methods are not accessible outside the class
-    if (*obj_method->uf_name == '_'
-			&& !class_instance_of(current_class, obj->obj_class))
+    if (*oc_method->uf_name == '_'
+			&& !class_instance_of(current_class, tv_cl))
     {
-	semsg(_(e_cannot_access_protected_method_str), obj_method->uf_name);
+	semsg(_(e_cannot_access_protected_method_str), oc_method->uf_name);
 	return FAIL;
     }
 
-    // Create a partial for the member function
-    if (obj_method_to_partial_tv(obj, obj_method, tv) == FAIL)
+    // Create a partial for the instance or class method
+    if (obj_method_to_partial_tv(is_object ? obj : NULL, oc_method, tv)
+								== FAIL)
 	return FAIL;
 
     return OK;
@@ -5671,15 +5695,16 @@ exec_instructions(ectx_T *ectx)
 
 		    tv = STACK_TV_BOT(-1);
 
-		    if (tv->v_type == VAR_OBJECT)
+		    if (tv->v_type == VAR_OBJECT
+			    || tv->v_type == VAR_CLASS)
 		    {
 			if (dict_stack_save(tv) == FAIL)
 			    goto on_fatal_error;
 
 			ufunc_T *ufunc = (((dfunc_T *)def_functions.ga_data)
 					+ ectx->ec_dfunc_idx)->df_ufunc;
-			// Class object (not a Dict)
-			if (any_var_get_obj_member(ufunc->uf_class, iptr, tv) == FAIL)
+			// Class or an object (not a Dict)
+			if (var_any_get_oc_member(ufunc->uf_class, iptr, tv) == FAIL)
 			    goto on_error;
 		    }
 		    else
@@ -6106,6 +6131,13 @@ exec_instructions(ectx_T *ectx)
 		--ectx->ec_stack.ga_len;
 		clear_tv(STACK_TV_BOT(0));
 		ectx->ec_where = (where_T)WHERE_INIT;
+		break;
+
+	    case ISN_SCRIPTCTX_SET:
+		// change the script context.  Used to evaluate an object
+		// member variable initialization expression in the context of
+		// the script where the class is defined.
+		current_sctx = iptr->isn_arg.setsctx;
 		break;
 	}
 	continue;
@@ -6691,6 +6723,7 @@ list_instructions(char *pfx, isn_T *instr, int instr_count, ufunc_T *ufunc)
     int		prev_current = 0;
     int		current;
     int		def_arg_idx = 0;
+    sctx_T	script_ctx = current_sctx;
 
     for (current = 0; current < instr_count; ++current)
     {
@@ -6872,8 +6905,11 @@ list_instructions(char *pfx, isn_T *instr, int instr_count, ufunc_T *ufunc)
 		    scriptref_T	    *sref = iptr->isn_arg.script.scriptref;
 		    scriptitem_T    *si = SCRIPT_ITEM(sref->sref_sid);
 		    svar_T	    *sv;
+		    sctx_T	    save_sctx = current_sctx;
 
+		    current_sctx = script_ctx;
 		    sv = get_script_svar(sref, -1);
+		    current_sctx = save_sctx;
 		    if (sv == NULL)
 			smsg("%s%4d LOADSCRIPT [deleted] from %s",
 						    pfx, current, si->sn_name);
@@ -6990,8 +7026,11 @@ list_instructions(char *pfx, isn_T *instr, int instr_count, ufunc_T *ufunc)
 		    scriptref_T	    *sref = iptr->isn_arg.script.scriptref;
 		    scriptitem_T    *si = SCRIPT_ITEM(sref->sref_sid);
 		    svar_T	    *sv;
+		    sctx_T	    save_sctx = current_sctx;
 
+		    current_sctx = script_ctx;
 		    sv = get_script_svar(sref, -1);
+		    current_sctx = save_sctx;
 		    if (sv == NULL)
 			smsg("%s%4d STORESCRIPT [deleted] in %s",
 						    pfx, current, si->sn_name);
@@ -7624,6 +7663,15 @@ list_instructions(char *pfx, isn_T *instr, int instr_count, ufunc_T *ufunc)
 					 iptr->isn_arg.shuffle.shfl_up);
 			      break;
 	    case ISN_DROP: smsg("%s%4d DROP", pfx, current); break;
+
+	    case ISN_SCRIPTCTX_SET:
+		{
+		    int	sid = iptr->isn_arg.setsctx.sc_sid;
+		    scriptitem_T *si = SCRIPT_ITEM(sid);
+		    smsg("%s%4d SCRIPTCTX_SET %s", pfx, current, si->sn_name);
+		    script_ctx = iptr->isn_arg.setsctx;
+		}
+		break;
 
 	    case ISN_FINISH: // End of list of instructions for ISN_SUBSTITUTE.
 			   return;
